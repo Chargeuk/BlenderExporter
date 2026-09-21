@@ -328,7 +328,8 @@ class AbstractBJSNode:
         elif NormalMapBJSNode.bpyType == bpyNode.bl_idname:
             return NormalMapBJSNode(bpyNode, socketName, overloadChannels)
 
-        elif bpyNode.bl_idname in PassThruBJSNode.PASS_THRU_SHADERS:
+        elif (bpyNode.bl_idname in PassThruBJSNode.PASS_THRU_SHADERS or
+              (bpyNode.bl_idname == 'ShaderNodeSeparateColor' and bpyNode.mode == 'RGB')):
             return PassThruBJSNode(bpyNode, socketName, overloadChannels)
 
         elif PrincipledBJSNode.bpyType == bpyNode.bl_idname:

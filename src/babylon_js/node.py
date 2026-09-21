@@ -52,7 +52,7 @@ class Node(FCurveAnimatable):
         for k, v in self.customProperties:
             print('writing custom prop:', k, v)
             if type(v) == str: write_string(file_handler, k, v, noComma)
-            elif type(v) == float: write_float(file_handler, k, v, noComma)
+            elif type(v) == float: write_float(file_handler, k, v, FLOAT_PRECISION_DEFAULT, noComma)
             elif type(v) == int: write_int(file_handler, k, v, noComma)
             else:
               Logger.warn('Non-scalar custom prop "' + k + '" ignored.', 2)

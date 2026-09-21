@@ -3,6 +3,7 @@ from math import floor
 from mathutils import Euler, Matrix
 
 import bpy
+import json
 from bpy import app
 from time import strftime
 FLOAT_PRECISION_DEFAULT = 4
@@ -327,7 +328,7 @@ def write_quaternion(file_handler, name, quaternion, precision = FLOAT_PRECISION
 def write_string(file_handler, name, string, noComma = False):
     if noComma == False:
         file_handler.write(',')
-    file_handler.write('"' + name + '":"' + string + '"')
+    file_handler.write(json.dumps(name) + ':' + json.dumps(string))
 
 def write_float(file_handler, name, float, precision = FLOAT_PRECISION_DEFAULT, noComma = False):
     if noComma == False:

@@ -3,3 +3,6 @@
 /nbproject/
 __pycache__/
 /doc-assist/raw/
+/artifacts/
+/dist/
+/*.log

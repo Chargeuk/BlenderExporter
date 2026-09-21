@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 2),
+    'version': (3, 3, 3),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -15,33 +15,33 @@ from bpy_extras.io_utils import ExportHelper, ImportHelper
 # allow module to be changed during a session (dev purposes)
 if "bpy" in locals():
     print('Reloading .babylon exporter')
-    import imp
+    import importlib
     if 'materials' in locals():
-        imp.reload(materials)  # directory
+        importlib.reload(materials)  # directory
     if 'animation' in locals():
-        imp.reload(animation)
+        importlib.reload(animation)
     if 'armature' in locals():
-        imp.reload(armature)
+        importlib.reload(armature)
     if 'camera' in locals():
-        imp.reload(camera)
+        importlib.reload(camera)
     if 'f_curve_animatable' in locals():
-        imp.reload(f_curve_animatable)
+        importlib.reload(f_curve_animatable)
     if 'js_exporter' in locals():
-        imp.reload(js_exporter)
+        importlib.reload(js_exporter)
     if 'light_shadow' in locals():
-        imp.reload(light_shadow)
+        importlib.reload(light_shadow)
     if 'logging' in locals():
-        imp.reload(logging)
+        importlib.reload(logging)
     if 'mesh' in locals():
-        imp.reload(mesh)
+        importlib.reload(mesh)
     if 'package_level' in locals():
-        imp.reload(package_level)
+        importlib.reload(package_level)
     if 'shape_key_group' in locals():
-        imp.reload(shape_key_group)
+        importlib.reload(shape_key_group)
     if 'sound' in locals():
-        imp.reload(sound)
+        importlib.reload(sound)
     if 'world' in locals():
-        imp.reload(world)
+        importlib.reload(world)
 
 #===============================================================================
 class JsonMain(bpy.types.Operator, ExportHelper):
@@ -64,7 +64,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
 
         if not verify_min_blender_version():
             self.report({'ERROR'}, 'version of Blender too old.')
-            return {'FINISHED'}
+            return {'CANCELLED'}
 
         exporter = JsonExporter()
         objects = bpy.context.selected_objects if self.export_selected else bpy.context.scene.objects
@@ -72,9 +72,11 @@ class JsonMain(bpy.types.Operator, ExportHelper):
 
         if (exporter.fatalError):
             self.report({'ERROR'}, exporter.fatalError)
+            return {'CANCELLED'}
 
         elif (exporter.nErrors > 0):
             self.report({'ERROR'}, 'Output cancelled due to data error, See log file.')
+            return {'CANCELLED'}
 
         elif (exporter.nWarnings > 0):
             self.report({'WARNING'}, 'Processing completed, but ' + str(exporter.nWarnings) + ' WARNINGS were raised,  see log file.')

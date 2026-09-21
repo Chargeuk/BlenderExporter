@@ -1,6 +1,6 @@
 import bpy
 
 if "bpy" in locals():
-    import imp
+    import importlib
     if 'support' in locals():
-        imp.reload(support)
+        importlib.reload(support)

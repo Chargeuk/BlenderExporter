@@ -105,6 +105,7 @@ class Texture:
         write_string(file_handler, 'name', self.fileNoPath, True)
 
         write_bool(file_handler, 'hasAlpha', self.hasAlpha)
+        write_bool(file_handler, 'gammaSpace', not self.image.colorspace_settings.is_data)
         write_float(file_handler, 'level', self.level)
 
         write_int(file_handler, 'coordinatesMode', self.coordinatesMode)

@@ -10,6 +10,23 @@ class PrincipledBJSNode(AbstractBJSNode):
     def __init__(self, bpyNode, socketName, overloadChannels):
         super().__init__(bpyNode, socketName, overloadChannels)
 
+        # Blender 4 reorganised Principled BSDF sockets. Keep the existing
+        # export mapping while accepting both old and current socket names.
+        aliases = {
+            'Subsurface': 'Subsurface Weight',
+            'Specular': 'Specular IOR Level',
+            'Clearcoat': 'Coat Weight',
+            'Clearcoat Roughness': 'Coat Roughness',
+            'Clearcoat Normal': 'Coat Normal',
+            'Sheen': 'Sheen Weight',
+            'Emission': 'Emission Color',
+            'Subsurface Color': 'Base Color',
+        }
+        for old, new in aliases.items():
+            if old not in self.defaults and new in self.defaults:
+                self.defaults[old] = self.defaults[new]
+                self.bjsSubNodes[old] = self.bjsSubNodes[new]
+
         input = self.findInput('Base Color')
         defaultDiffuse = self.findTexture(input, DIFFUSE_TEX)
 
@@ -75,7 +92,8 @@ class PrincipledBJSNode(AbstractBJSNode):
         # only want scalars, when no texture on either input & intensity > 0
         if SHEEN_TEX not in self.bjsTextures and defaultSheenIntensity is not None and defaultSheenIntensity > 0:
             self.sheenIntensity = defaultSheenIntensity
-            self.sheenColor = Color((defaultSheenColor, defaultSheenColor, defaultSheenColor))
+            self.sheenColor = (Color(defaultSheenColor[:3]) if hasattr(defaultSheenColor, '__len__')
+                               else Color((defaultSheenColor, defaultSheenColor, defaultSheenColor)))
         # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
         input = self.getDefault('Anisotropic')
         # ignoring texture surfaces & must be greater than 0

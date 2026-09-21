@@ -179,7 +179,7 @@ class Mesh(FCurveAnimatable):
         mesh = objectWithModifiers.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
 
         # Triangulate mesh if required
-        Mesh.mesh_triangulate(mesh)
+        hasTangents = Mesh.mesh_triangulate(mesh)
 
         # Getting vertices and indices
         self.positions  = []
@@ -264,15 +264,19 @@ class Mesh(FCurveAnimatable):
                     vertex = mesh.vertices[vertex_index]
                     position = vertex.co.copy()
 
-                    if mesh.has_custom_normals:
+                    if hasattr(mesh, 'corner_normals'):
+                        normal = mesh.corner_normals[loop_index].vector.copy()
+                    elif mesh.has_custom_normals:
                         split_normal = tri.split_normals[v]
                         normal = Vector(split_normal)
-                        t = mesh.loops[loop_index].tangent
-                        tangent = [t.x, t.z, t.y, mesh.loops[loop_index].bitangent_sign]
                     elif tri.use_smooth:
                         normal = vertex.normal.copy()
                     else:
                         normal = tri.normal.copy()
+
+                    if hasTangents:
+                        t = mesh.loops[loop_index].tangent
+                        tangent = [t.x, t.z, t.y, mesh.loops[loop_index].bitangent_sign]
 
                     #skeletons
                     if self.hasSkeleton:
@@ -312,7 +316,7 @@ class Mesh(FCurveAnimatable):
                             if not same_vertex(normal, vNormal, world.normalsPrecision):
                                 continue;
 
-                            if mesh.has_custom_normals:
+                            if hasTangents:
                                 vTangent = vertices_Tangents[vertex_index][index_UV]
                                 if not same_array(tangent, vTangent, world.normalsPrecision):
                                     continue;
@@ -355,7 +359,7 @@ class Mesh(FCurveAnimatable):
                         vertices_Normals[vertex_index].append(normal)
                         self.normals.append(normal)
 
-                        if mesh.has_custom_normals:
+                        if hasTangents:
                             vertices_Tangents[vertex_index].append(tangent)
                             self.tangents.append(tangent[0])
                             self.tangents.append(tangent[1])
@@ -401,7 +405,7 @@ class Mesh(FCurveAnimatable):
                     indicesCount += 1
             self.subMeshes.append(SubMesh(materialIndex, subMeshVerticesStart, subMeshIndexStart, verticesCount - subMeshVerticesStart, indicesCount - subMeshIndexStart))
 
-        bpyMesh.to_mesh_clear()
+        objectWithModifiers.to_mesh_clear()
         BJSMaterial.meshBakingClean(bpyMesh)
 
         Logger.log('num positions      :  ' + str(len(self.positions)), 2)
@@ -508,20 +512,18 @@ class Mesh(FCurveAnimatable):
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     @staticmethod
     def mesh_triangulate(mesh):
-        try:
-            import bmesh
-            bm = bmesh.new()
-            bm.from_mesh(mesh)
-            bmesh.ops.triangulate(bm, faces = bm.faces)
-            bm.to_mesh(mesh)
-            mesh.calc_loop_triangles()
-            if mesh.has_custom_normals:
-                mesh.calc_tangents() # also calcs split normals
-                Logger.log('Custom split normals with tangents being used', 2)
-
-            bm.free()
-        except:
-            pass
+        # Read Blender's evaluated tessellation without rewriting the mesh.
+        # A bmesh round-trip can change custom/weighted corner normals and
+        # interpolation on already baked surfaces.
+        mesh.calc_loop_triangles()
+        if (mesh.has_custom_normals and len(mesh.uv_layers) and
+                all(len(poly.vertices) <= 4 for poly in mesh.polygons)):
+            mesh.calc_tangents(uvmap=mesh.uv_layers[0].name)
+            Logger.log('Custom split normals with tangents being used', 2)
+            return True
+        # Tangents are optional in Babylon. Preserve n-gon tessellation and
+        # normals instead of destructively triangulating solely for tangents.
+        return False
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     def toFixedInfluencers(self, weightsPerVertex, indicesPerVertex, maxInfluencers, highestObserved):
         if (maxInfluencers > 8 or maxInfluencers < 1):

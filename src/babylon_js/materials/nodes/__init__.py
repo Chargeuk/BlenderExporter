@@ -1,42 +1,42 @@
 if "bpy" in locals():
-    import imp
+    import importlib
     if 'abstract' in locals():
-        imp.reload(abstract)
+        importlib.reload(abstract)
     if 'ambient_occlusion' in locals():
-        imp.reload(ambient_occlusion)
+        importlib.reload(ambient_occlusion)
     if 'background' in locals():
-        imp.reload(background)
+        importlib.reload(background)
     if 'diffuse' in locals():
-        imp.reload(diffuse)
+        importlib.reload(diffuse)
     if 'emission' in locals():
-        imp.reload(emission)
+        importlib.reload(emission)
     if 'fresnel' in locals():
-        imp.reload(fresnel)
+        importlib.reload(fresnel)
     if 'glossy' in locals():
-        imp.reload(glossy)
+        importlib.reload(glossy)
     if 'gltf' in locals():
-        imp.reload(gltf)
+        importlib.reload(gltf)
     if 'normal_map' in locals():
-        imp.reload(normal_map)
+        importlib.reload(normal_map)
     if 'mapping' in locals():
-        imp.reload(mapping)
+        importlib.reload(mapping)
     if 'passthru' in locals():
-        imp.reload(passthru)
+        importlib.reload(passthru)
     if 'principled' in locals():
-        imp.reload(principled)
+        importlib.reload(principled)
     if 'refraction' in locals():
-        imp.reload(refraction)
+        importlib.reload(refraction)
     if 'tex_coord' in locals():
-        imp.reload(tex_coord)
+        importlib.reload(tex_coord)
     if 'tex_environment' in locals():
-        imp.reload(tex_environment)
+        importlib.reload(tex_environment)
     if 'tex_image' in locals():
-        imp.reload(tex_image)
+        importlib.reload(tex_image)
     if 'transparency' in locals():
-        imp.reload(transparency)
+        importlib.reload(transparency)
     if 'unsupported' in locals():
-        imp.reload(unsupported)
+        importlib.reload(unsupported)
     if 'uv_map' in locals():
-        imp.reload(uv_map)
+        importlib.reload(uv_map)
 
 import bpy

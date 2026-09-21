@@ -1,14 +1,14 @@
 import bpy
 
 if "bpy" in locals():
-    import imp
+    import importlib
     if 'nodes' in locals():
-        imp.reload(nodes)  # directory
+        importlib.reload(nodes)  # directory
     if 'env_textures' in locals():
-        imp.reload(env_textures)  # directory
+        importlib.reload(env_textures)  # directory
     if 'baking_recipe' in locals():
-        imp.reload(baking_recipe)
+        importlib.reload(baking_recipe)
     if 'material' in locals():
-        imp.reload(material)
+        importlib.reload(material)
     if 'texture' in locals():
-        imp.reload(texture)
+        importlib.reload(texture)
