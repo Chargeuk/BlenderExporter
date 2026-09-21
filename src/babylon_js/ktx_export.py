@@ -305,7 +305,7 @@ def publish_package(package, destination, backup):
         raise
 
 
-def execute_with_ktx(exporter, context, filepath, objects, options):
+def execute_with_ktx(exporter, context, filepath, objects, options, material_options=None):
     """Called by JsonExporter only when the option is explicitly enabled."""
     import bpy
     exporter.fatalError = None
@@ -342,7 +342,7 @@ def execute_with_ktx(exporter, context, filepath, objects, options):
         try:
             settings.textureDir = 'source_textures'  # contained staging regardless of user's textureDir
             objects = list(objects)
-            exporter.execute(context, str(raw), objects)
+            exporter.execute(context, str(raw), objects, material_options=material_options)
         finally:
             settings.textureDir = old_dir
         if exporter.fatalError or exporter.nErrors:
@@ -401,6 +401,7 @@ def execute_with_ktx(exporter, context, filepath, objects, options):
             if file.suffix in ('.log', '.csv', '.manifest'):
                 shutil.copy2(file, package / file.name)
         summary = dict(status='passed', ktx=message, staging=str(work), options=options,
+                       material_multipliers=exporter.material_options,
                        textures=result['textures'], model=str(target), changes=result.get('changes', []))
         if skybox_report:
             summary['skybox'] = skybox_report

@@ -16,6 +16,7 @@ from os import path, makedirs
 # JSON specific, for manifest file
 import time
 import calendar
+import math
 
 from .node import Node
 
@@ -23,10 +24,25 @@ from .node import Node
 class JsonExporter:
     nameSpace   = None  # assigned in execute
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    def execute(self, context, filepath, objects, ktx_options=None):
+    def execute(self, context, filepath, objects, ktx_options=None, material_options=None):
+        # Export-only calibration requested for this KaDshow fork. Do not mutate
+        # Blender materials or bake inputs; 1/1 restores unscaled source values.
+        self.material_options = dict(metallic=.5, roughness=.4)
+        if material_options is not None:
+            self.material_options.update(material_options)
+        try:
+            for key in ('metallic', 'roughness'):
+                value = float(self.material_options[key])
+                if not math.isfinite(value) or not 0 <= value <= 1:
+                    raise ValueError(key + ' export multiplier must be between 0 and 1')
+                self.material_options[key] = value
+        except (ValueError, TypeError) as exc:
+            self.fatalError = str(exc)
+            self.nErrors, self.nWarnings = 1, 0
+            return
         if ktx_options is not None:
             from .ktx_export import execute_with_ktx
-            return execute_with_ktx(self, context, filepath, objects, ktx_options)
+            return execute_with_ktx(self, context, filepath, objects, ktx_options, self.material_options)
         scene = context.scene
         self.scene = scene # reference for passing
         self.settings = scene.world

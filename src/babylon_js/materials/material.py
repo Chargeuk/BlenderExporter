@@ -111,6 +111,7 @@ class BJSMaterial:
                 self.diffuseColor = bpyMaterial.diffuse_color
                 self.specularColor = bpyMaterial.specular_intensity * bpyMaterial.specular_color
                 self.metallic = bpyMaterial.metallic
+                self.roughness = bpyMaterial.roughness
         else:
             self.name = mat.name
             self.bjsNodeTree = mat.bjsNodeTree
@@ -304,7 +305,8 @@ class BJSMaterial:
             write_color(file_handler, propName, self.specularColor)
 
             if self.isPBR:
-                write_float(file_handler, 'metallic', self.metallic)
+                write_float(file_handler, 'metallic', self.metallic * self.exporter.material_options['metallic'])
+                write_float(file_handler, 'roughness', self.roughness * self.exporter.material_options['roughness'])
 
             file_handler.write('}')
             return
@@ -340,7 +342,7 @@ class BJSMaterial:
         else:
             roughness = 0.2 # 0.2 is the Blender default for glossy Node
 
-        value = roughness if self.isPBR else 128 - (roughness * 128)
+        value = roughness * self.exporter.material_options['roughness'] if self.isPBR else 128 - (roughness * 128)
         propName = 'roughness' if self.isPBR else 'specularPower'
         write_float(file_handler, propName, value)
 
@@ -355,7 +357,8 @@ class BJSMaterial:
 
             # source principle node
             if self.bjsNodeTree.metallic is not None or METAL_TEX in self.textures:
-                write_float(file_handler, 'metallic', 1.0 if METAL_TEX in self.textures else self.bjsNodeTree.metallic)
+                metallic = 1.0 if METAL_TEX in self.textures else self.bjsNodeTree.metallic
+                write_float(file_handler, 'metallic', metallic * self.exporter.material_options['metallic'])
 
             # source emissive node
             if self.bjsNodeTree.emissiveIntensity is not None and self.bjsNodeTree.emissiveIntensity != DEF_EMISSIVE_INTENSITY:

@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 6),
+    'version': (3, 3, 7),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -83,6 +83,13 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         description='Export only the currently selected objects',
         default=False
     )
+
+    material_metallic_multiplier: bpy.props.FloatProperty(
+        name='Metallic export multiplier', default=.5, min=0, max=1,
+        description='Scale exported PBR metallic values only; 1 preserves source response, Blender materials remain unchanged')
+    material_roughness_multiplier: bpy.props.FloatProperty(
+        name='Roughness export multiplier', default=.4, min=0, max=1,
+        description='Scale exported PBR roughness values only; 1 preserves source response, Blender materials remain unchanged')
 
     convert_to_ktx2: bpy.props.BoolProperty(
         name='Convert textures to KTX2', default=False, update=update_ktx_defaults,
@@ -179,7 +186,9 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                 options['environment'] = dict(converter=self.environment_converter,image=self.environment_image,
                     size=int(self.environment_size),exposure=self.environment_exposure,
                     highlight_gain=self.environment_highlight_gain,highlight_threshold=self.environment_highlight_threshold)
-        exporter.execute(context, self.filepath, objects, ktx_options=options)
+        exporter.execute(context, self.filepath, objects, ktx_options=options,
+                         material_options=dict(metallic=self.material_metallic_multiplier,
+                                               roughness=self.material_roughness_multiplier))
 
         if (exporter.fatalError):
             self.report({'ERROR'}, exporter.fatalError)
@@ -202,6 +211,10 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             text='Other export settings in properties panels'
         )
         self.layout.prop(self, 'export_selected')
+        material = self.layout.box()
+        material.label(text='PBR export calibration (KaDshow)')
+        material.prop(self, 'material_metallic_multiplier')
+        material.prop(self, 'material_roughness_multiplier')
         from .ktx_export import find_ktx
         box = self.layout.box()
         box.prop(self, 'ktx_executable')
