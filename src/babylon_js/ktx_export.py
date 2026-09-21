@@ -312,12 +312,20 @@ def execute_with_ktx(exporter, context, filepath, objects, options):
     exporter.nErrors = exporter.nWarnings = 0
     work = None
     try:
-        tool, message = find_ktx(options.get('executable', ''))
-        if not tool:
-            raise ValueError(message)
+        convert_materials = options.get('convert_materials', True)
+        tool, message = '', 'Material conversion disabled'
+        if convert_materials:
+            tool, message = find_ktx(options.get('executable', ''))
+            if not tool:
+                raise ValueError(message)
+        if 'skybox' in options:
+            from .skybox_export import find_basisu
+            basis, reason = find_basisu(options['skybox'].get('executable', ''))
+            if not basis:
+                raise ValueError(reason)
         settings = context.scene.world
         if settings.inlineTextures:
-            raise ValueError('Disable Inline textures before enabling KTX2 conversion')
+            raise ValueError('Disable Inline textures before enabling KTX2 or skybox conversion')
         target = Path(filepath).resolve()
         if target.suffix.lower() != '.babylon':
             raise ValueError('Choose a .babylon output filename')
@@ -335,7 +343,8 @@ def execute_with_ktx(exporter, context, filepath, objects, options):
         if exporter.fatalError or exporter.nErrors:
             raise RuntimeError(exporter.fatalError or 'Exporter reported data errors; see staging log')
         _check_texture_collisions(exporter)
-        config = make_config(raw, work, options, context, objects)
+        config = make_config(raw, work, options, context, objects) if convert_materials else dict(
+            version=1, models=[dict(source=str(raw), output=raw.name)], textures=[])
         detection = options.get('lightmap_detection')
         if detection and detection['marker'] and not detection['path']:
             exporter.nWarnings += 1
@@ -354,6 +363,11 @@ def execute_with_ktx(exporter, context, filepath, objects, options):
         # Keep unconverted referenced images (e.g. World HDRI) at their original
         # relative paths. Do not copy redundant source material PNGs to delivery.
         delivered = core.read_json(package / target.name)
+        skybox_report = None
+        if 'skybox' in options:
+            from .skybox_export import export_skybox
+            skybox_report = export_skybox(context, delivered, work, package, options['skybox'])
+            (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
         for owner, key, _, _ in core.texture_fields(delivered):
             reference = owner[key]
             if '://' in reference or reference.startswith('data:'):
@@ -373,11 +387,13 @@ def execute_with_ktx(exporter, context, filepath, objects, options):
                 shutil.copy2(file, package / file.name)
         summary = dict(status='passed', ktx=message, staging=str(work), options=options,
                        textures=result['textures'], model=str(target), changes=result.get('changes', []))
+        if skybox_report:
+            summary['skybox'] = skybox_report
         (package / (target.stem + '.ktx-report.json')).write_text(json.dumps(summary, indent=2), encoding='utf8')
         publish_package(package, target.parent, work / 'previous_delivery')
         exporter.ktx_report = summary
     except Exception as exc:
-        exporter.fatalError = 'KTX2 export failed: ' + str(exc)
+        exporter.fatalError = 'Texture/skybox export failed: ' + str(exc)
         exporter.nErrors = max(1, exporter.nErrors)
         if work:
             (work / 'FAILED.txt').write_text(exporter.fatalError, encoding='utf8')

@@ -1,8 +1,8 @@
 # Blender to Babylon.js exporter
 
-## Chargeuk fork: Blender 5.2 and optional KTX2 export
+## Chargeuk fork: Blender 5.2, KTX2 and Basis skybox export
 
-Version 3.3.4 adds an optional **Convert textures to KTX2** export checkbox, PATH/tool detection, PNG preparation, material reference updates and automatic KaDshow lightmap defaults. See [KTX2 setup, controls and tests](docs/KTX2_EXPORT.md). Conversion is off by default and requires KTX-Software 4.4.2+.
+Version 3.3.5 adds optional **Export KaDshow skybox** with selectable square face sizes, default **1024**, panorama conversion and validated `cubemap.basis` delivery. See [skybox settings and tests](docs/SKYBOX_EXPORT.md). It requires Basis Universal and works independently or alongside **Convert textures to KTX2**, introduced in 3.3.4. See [KTX2 setup, controls and tests](docs/KTX2_EXPORT.md). Both options are off by default; material conversion requires KTX-Software 4.4.2+.
 
 The fork has been tested with Blender 5.2.2 LTS on a static KaDshow environment. See [Blender compatibility fixes](docs/BLENDER_52.md) and [the KaDshow import contract and remaining asset gaps](docs/KADSHOW_EXPORT_GAPS.md). Build the updated add-on with `python tools/package_addon.py`; the older root ZIP is historical.
 

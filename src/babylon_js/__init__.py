@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 4),
+    'version': (3, 3, 5),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -49,6 +49,11 @@ def update_ktx_defaults(operator, context):
     autofill_lightmap(operator, context)
 
 
+def update_skybox_defaults(operator, context):
+    from .skybox_export import autofill_panorama
+    autofill_panorama(operator, context)
+
+
 class JsonMain(bpy.types.Operator, ExportHelper):
     bl_idname = 'export.bjs'
     bl_label = 'Export Babylon.js scene' # used on the label of the actual 'save' button
@@ -87,6 +92,32 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         name='Lightmap marker', default='',
         description='Exact exported lightmap_ node name; empty selects the only marker in the export')
 
+    export_skybox: bpy.props.BoolProperty(
+        name='Export KaDshow skybox', default=False, update=update_skybox_defaults,
+        description='Convert a panorama to cubemap.basis and add the exported skybox marker; requires basisu')
+    basis_executable: bpy.props.StringProperty(
+        name='Basis executable', subtype='FILE_PATH', default='',
+        description='Optional basisu path; leave empty to search PATH (tested: Basis Universal 2.50)')
+    skybox_image: bpy.props.StringProperty(
+        name='Skybox panorama', subtype='FILE_PATH', default='',
+        description='Saved 2:1 PNG/JPEG/EXR/HDR panorama; empty uses a unique connected World environment image')
+    skybox_size: bpy.props.EnumProperty(
+        name='Skybox face size', default='1024',
+        items=[(str(size), str(size) + ' x ' + str(size), 'Pixels per cube face')
+               for size in (256, 512, 1024, 2048, 4096)])
+    skybox_rotation: bpy.props.FloatProperty(
+        name='Skybox rotation (degrees)', default=180, min=-360, max=360,
+        description='Panorama rotation, matching the old panorama-to-cubemap convention; World mapping is not applied')
+    skybox_exposure: bpy.props.FloatProperty(
+        name='Skybox exposure (stops)', default=0, min=-20, max=20,
+        description='Explicit exposure adjustment for the visible skybox; World strength and scene exposure are not applied')
+    skybox_tone_map: bpy.props.EnumProperty(
+        name='HDR skybox display', default='REINHARD',
+        items=[('REINHARD', 'Reinhard (compress highlights)', 'Luminance tone mapping, then sRGB; HDR inputs only'),
+               ('STANDARD', 'Standard (clip highlights)', 'Clip linear values to 0..1, then sRGB; HDR inputs only')])
+    skybox_quality: bpy.props.IntProperty(name='Skybox ETC1S quality', default=255, min=1, max=255)
+    skybox_threads: bpy.props.IntProperty(name='Skybox encoder threads', default=8, min=1, max=128)
+
     def execute(self, context):
         from .json_exporter import JsonExporter
         from .package_level import get_title, verify_min_blender_version
@@ -98,11 +129,16 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         exporter = JsonExporter()
         objects = bpy.context.selected_objects if self.export_selected else bpy.context.scene.objects
         options = None
-        if self.convert_to_ktx2:
+        if self.convert_to_ktx2 or self.export_skybox:
             options = dict(executable=self.ktx_executable, flip_y=self.ktx_flip_y,
                            codec=self.ktx_codec, threads=self.ktx_threads,
                            lightmap=self.ktx_lightmap, lightmap_marker=self.ktx_lightmap_marker,
-                           auto_lightmap=self.ktx_auto_lightmap)
+                           auto_lightmap=self.ktx_auto_lightmap,
+                           convert_materials=self.convert_to_ktx2)
+            if self.export_skybox:
+                options['skybox'] = dict(executable=self.basis_executable, image=self.skybox_image,
+                    size=int(self.skybox_size), rotation=self.skybox_rotation, exposure=self.skybox_exposure,
+                    tone_map=self.skybox_tone_map, quality=self.skybox_quality, threads=self.skybox_threads)
         exporter.execute(context, self.filepath, objects, ktx_options=options)
 
         if (exporter.fatalError):
@@ -150,6 +186,25 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                 box.label(text=found['reason'], icon='INFO')
             if context.scene.world and context.scene.world.inlineTextures:
                 box.label(text='Disable Inline textures in World settings', icon='ERROR')
+        from .skybox_export import find_basisu
+        sky = self.layout.box()
+        sky.prop(self, 'basis_executable')
+        tool, status = find_basisu(self.basis_executable)
+        row = sky.row()
+        row.enabled = bool(tool) or self.export_skybox
+        row.prop(self, 'export_skybox')
+        sky.label(text=status, icon='CHECKMARK' if tool else 'INFO')
+        if self.export_skybox:
+            sky.prop(self, 'skybox_image')
+            sky.prop(self, 'skybox_size')
+            sky.prop(self, 'skybox_rotation')
+            sky.prop(self, 'skybox_exposure')
+            sky.prop(self, 'skybox_tone_map')
+            sky.prop(self, 'skybox_quality')
+            sky.prop(self, 'skybox_threads')
+            sky.label(text='Image only: World mapping/strength are not applied', icon='INFO')
+            if context.scene.world and context.scene.world.inlineTextures:
+                sky.label(text='Disable Inline textures in World settings', icon='ERROR')
 #===============================================================================
 # The list of classes which sub-class a Blender class, which needs to be registered
 from . import camera

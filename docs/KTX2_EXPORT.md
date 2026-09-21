@@ -1,5 +1,7 @@
 # Optional KTX2 texture export (3.3.4)
 
+Version 3.3.5 also supports [optional Basis skybox export](SKYBOX_EXPORT.md), independently or together with KTX2 conversion. Statements below about skipping cube/World textures describe material conversion; the new explicit skybox option separately generates `cubemap.basis`. Reflection `.env` generation remains separate.
+
 Enable **Convert textures to KTX2** in File > Export > Babylon.js to prepare PNGs, compress material textures, update the `.babylon` references and deliver the finished package. The option is **off by default**; ordinary export follows the existing path.
 
 ## Setup and controls
@@ -97,4 +99,4 @@ Tested with Windows Blender 5.2.2 LTS and KTX 4.4.2. The path lookup/subprocess 
 - `tests/test_blender_compat.py`: existing compatibility fixture still passes with conversion disabled.
 - `tests/export_bedroom_ktx.py`: preserved bedroom source exported with three KTX2 textures, 633 visible meshes / **20,000 triangles**, 29 helpers; geometry, UVs, normals and parent relationships unchanged. An in-memory explicit lightmap association tests automatic detection without changing the saved source. This validates data and conversion, not a completed in-app KaDshow rendering review.
 
-Build the installable add-on with `python tools/package_addon.py`. It reads the add-on version and produces `dist/Blender2Babylon-3.3.4-blender52.zip` for this release.
+Build the installable add-on with `python tools/package_addon.py`. It reads the add-on version and produces `dist/Blender2Babylon-<version>-blender52.zip`.
