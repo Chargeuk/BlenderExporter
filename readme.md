@@ -2,7 +2,9 @@
 
 ## Chargeuk fork: Blender 5.2, KTX2 and Basis skybox export
 
-Version 3.3.5 adds optional **Export KaDshow skybox** with selectable square face sizes, default **1024**, panorama conversion and validated `cubemap.basis` delivery. See [skybox settings and tests](docs/SKYBOX_EXPORT.md). It requires Basis Universal and works independently or alongside **Convert textures to KTX2**, introduced in 3.3.4. See [KTX2 setup, controls and tests](docs/KTX2_EXPORT.md). Both options are off by default; material conversion requires KTX-Software 4.4.2+.
+Version 3.3.6 adds optional **Export KaDshow environment lighting**: a saved room EXR/HDR becomes a validated `environment.env`, with selectable face size defaulting to **512**, exposure/highlight controls and a delivery-only `hasenv` marker. See [ENV setup, capture contract and tests](docs/ENV_EXPORT.md). The local converter requires Node.js, the pinned Babylon helper and Chromium; it does not start a Blender render.
+
+Version 3.3.5 added optional **Export KaDshow skybox** with selectable square face sizes, default **1024**, panorama conversion and validated `cubemap.basis` delivery. See [skybox settings and tests](docs/SKYBOX_EXPORT.md). It requires Basis Universal and works independently or alongside **Convert textures to KTX2**, introduced in 3.3.4. See [KTX2 setup, controls and tests](docs/KTX2_EXPORT.md). All three options are off by default; material conversion requires KTX-Software 4.4.2+.
 
 The fork has been tested with Blender 5.2.2 LTS on a static KaDshow environment. See [Blender compatibility fixes](docs/BLENDER_52.md) and [the KaDshow import contract and remaining asset gaps](docs/KADSHOW_EXPORT_GAPS.md). Build the updated add-on with `python tools/package_addon.py`; the older root ZIP is historical.
 
