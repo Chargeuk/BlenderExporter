@@ -1,0 +1,10 @@
+{
+  "name": "babylon-env-converter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local HDR to .env conversion pinned to KaDshow's Babylon version",
+  "dependencies": {
+    "babylonjs": "7.27.0",
+    "playwright-core": "1.56.1"
+  }
+}

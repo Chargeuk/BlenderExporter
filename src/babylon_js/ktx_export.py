@@ -323,9 +323,14 @@ def execute_with_ktx(exporter, context, filepath, objects, options):
             basis, reason = find_basisu(options['skybox'].get('executable', ''))
             if not basis:
                 raise ValueError(reason)
+        if 'environment' in options:
+            from .env_export import find_converter
+            node, script, reason = find_converter(options['environment'].get('converter', ''))
+            if not node:
+                raise ValueError(reason)
         settings = context.scene.world
         if settings.inlineTextures:
-            raise ValueError('Disable Inline textures before enabling KTX2 or skybox conversion')
+            raise ValueError('Disable Inline textures before enabling staged texture/environment conversion')
         target = Path(filepath).resolve()
         if target.suffix.lower() != '.babylon':
             raise ValueError('Choose a .babylon output filename')
@@ -368,6 +373,16 @@ def execute_with_ktx(exporter, context, filepath, objects, options):
             from .skybox_export import export_skybox
             skybox_report = export_skybox(context, delivered, work, package, options['skybox'])
             (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
+        environment_report = None
+        if 'environment' in options:
+            from .env_export import export_environment
+            environment_report = export_environment(context, delivered, work, package, options['environment'])
+            # The custom KaDshow environment loader uses hasenv/environment.env.
+            # Avoid delivering a second raw World panorama as a stock scene default.
+            for key in list(delivered):
+                if key.startswith('environmentTexture'):
+                    del delivered[key]
+            (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
         for owner, key, _, _ in core.texture_fields(delivered):
             reference = owner[key]
             if '://' in reference or reference.startswith('data:'):
@@ -389,6 +404,8 @@ def execute_with_ktx(exporter, context, filepath, objects, options):
                        textures=result['textures'], model=str(target), changes=result.get('changes', []))
         if skybox_report:
             summary['skybox'] = skybox_report
+        if environment_report:
+            summary['environment'] = environment_report
         (package / (target.stem + '.ktx-report.json')).write_text(json.dumps(summary, indent=2), encoding='utf8')
         publish_package(package, target.parent, work / 'previous_delivery')
         exporter.ktx_report = summary

@@ -1,6 +1,8 @@
 # KaDshow exporter contract and remaining gaps
 
-Update for 3.3.5: [optional skybox export](SKYBOX_EXPORT.md) now generates `cubemap.basis` from a panorama, with a selectable face size defaulting to 1024, and creates/updates the delivery-only `hasskyboxbasis` marker. The historical missing-skybox rows below are superseded for exports using this option. Reflection `.env` generation and in-app visual acceptance remain separate.
+Update for 3.3.6: [room ENV conversion](ENV_EXPORT.md) now generates `environment.env` from an explicitly rendered linear room panorama and adds `hasenv`. It supports selectable face size (512 default) and non-destructive exposure/highlight adjustment. This supersedes the historical missing-ENV row below. Capture authoring remains a separate final-stage operation; full in-app visual acceptance is pending.
+
+Update for 3.3.5: [optional skybox export](SKYBOX_EXPORT.md) generates `cubemap.basis` from a panorama, with a selectable face size defaulting to 1024, and creates/updates the delivery-only `hasskyboxbasis` marker. The historical missing-skybox rows below are superseded for exports using this option.
 
 Update for 3.3.4: [optional KTX2 conversion](KTX2_EXPORT.md) now prepares/converts material images and an explicitly selected or unambiguously identified KaDshow lightmap, updates delivery references, and validates before publishing. The report below describes the initial 3.3.3 artifact. Environment/skybox generation, runtime light authoring, a general KaDshow delivery-selection preset and in-app visual acceptance remain separate work.
 

@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 5),
+    'version': (3, 3, 6),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -52,6 +52,22 @@ def update_ktx_defaults(operator, context):
 def update_skybox_defaults(operator, context):
     from .skybox_export import autofill_panorama
     autofill_panorama(operator, context)
+
+
+def update_environment_defaults(operator, context):
+    from .env_export import autofill_environment
+    autofill_environment(operator, context)
+
+
+class BabylonExportPreferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+    env_converter_script: bpy.props.StringProperty(
+        name='ENV converter script', subtype='FILE_PATH', default='',
+        description='Path to tools/env-converter/convert.cjs with its npm dependencies installed')
+
+    def draw(self, context):
+        self.layout.prop(self, 'env_converter_script')
+        self.layout.label(text='Optional room HDR to ENV converter; see ENV_EXPORT.md')
 
 
 class JsonMain(bpy.types.Operator, ExportHelper):
@@ -118,6 +134,26 @@ class JsonMain(bpy.types.Operator, ExportHelper):
     skybox_quality: bpy.props.IntProperty(name='Skybox ETC1S quality', default=255, min=1, max=255)
     skybox_threads: bpy.props.IntProperty(name='Skybox encoder threads', default=8, min=1, max=128)
 
+    export_environment: bpy.props.BoolProperty(
+        name='Export KaDshow environment lighting', default=False, update=update_environment_defaults,
+        description='Convert a rendered room HDR capture to environment.env and add hasenv; does not render the room')
+    environment_converter: bpy.props.StringProperty(
+        name='ENV converter override', subtype='FILE_PATH', default='',
+        description='Optional convert.cjs override; otherwise use the add-on preference')
+    environment_image: bpy.props.StringProperty(
+        name='Room HDR capture', subtype='FILE_PATH', default='',
+        description='Linear room EXR/HDR; auto-association from World bjs_environment_image, not the World sky image')
+    environment_size: bpy.props.EnumProperty(
+        name='ENV face size', default='512',
+        items=[(str(size),str(size)+' x '+str(size),'Prefiltered reflection resolution per face') for size in (128,256,512,1024)])
+    environment_exposure: bpy.props.FloatProperty(name='ENV exposure (stops)',default=0,min=-20,max=20)
+    environment_highlight_gain: bpy.props.FloatProperty(
+        name='ENV highlight gain',default=1,min=1,max=16,
+        description='Multiply bright regions through a smooth luminance ramp; 1 leaves the capture unchanged')
+    environment_highlight_threshold: bpy.props.FloatProperty(
+        name='ENV highlight threshold',default=1,min=.001,max=10000,
+        description='Linear luminance where gain starts; reaches full strength at twice this threshold')
+
     def execute(self, context):
         from .json_exporter import JsonExporter
         from .package_level import get_title, verify_min_blender_version
@@ -129,7 +165,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         exporter = JsonExporter()
         objects = bpy.context.selected_objects if self.export_selected else bpy.context.scene.objects
         options = None
-        if self.convert_to_ktx2 or self.export_skybox:
+        if self.convert_to_ktx2 or self.export_skybox or self.export_environment:
             options = dict(executable=self.ktx_executable, flip_y=self.ktx_flip_y,
                            codec=self.ktx_codec, threads=self.ktx_threads,
                            lightmap=self.ktx_lightmap, lightmap_marker=self.ktx_lightmap_marker,
@@ -139,6 +175,10 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                 options['skybox'] = dict(executable=self.basis_executable, image=self.skybox_image,
                     size=int(self.skybox_size), rotation=self.skybox_rotation, exposure=self.skybox_exposure,
                     tone_map=self.skybox_tone_map, quality=self.skybox_quality, threads=self.skybox_threads)
+            if self.export_environment:
+                options['environment'] = dict(converter=self.environment_converter,image=self.environment_image,
+                    size=int(self.environment_size),exposure=self.environment_exposure,
+                    highlight_gain=self.environment_highlight_gain,highlight_threshold=self.environment_highlight_threshold)
         exporter.execute(context, self.filepath, objects, ktx_options=options)
 
         if (exporter.fatalError):
@@ -205,6 +245,19 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             sky.label(text='Image only: World mapping/strength are not applied', icon='INFO')
             if context.scene.world and context.scene.world.inlineTextures:
                 sky.label(text='Disable Inline textures in World settings', icon='ERROR')
+        from .env_export import find_converter
+        env = self.layout.box()
+        env.prop(self, 'environment_converter')
+        node, script, status = find_converter(self.environment_converter)
+        row = env.row()
+        row.enabled = bool(node) or self.export_environment
+        row.prop(self, 'export_environment')
+        env.label(text=status, icon='CHECKMARK' if node else 'INFO')
+        if self.export_environment:
+            for prop in ('environment_image','environment_size','environment_exposure',
+                         'environment_highlight_gain','environment_highlight_threshold'):
+                env.prop(self, prop)
+            env.label(text='Uses a saved room capture; no render is started', icon='INFO')
 #===============================================================================
 # The list of classes which sub-class a Blender class, which needs to be registered
 from . import camera
@@ -214,6 +267,7 @@ from . import world # must be defined before mesh
 from . import mesh
 classes = (
     # Operator sub-classes
+    BabylonExportPreferences,
     JsonMain,
 
     # Panel sub-classes
