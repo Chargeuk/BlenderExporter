@@ -29,9 +29,11 @@ async function main(){
    if(!KadShowSceneLoader.ImportBabylonMeshesAndLights(null,scene,raw,'/assets/',meshes,particles,skeletons,lights,(m,e)=>{throw e||Error(m);}))throw Error('Parser failed');
    const textureErrors=[];
    console.log('Parsed room; loading lightmap');
-   const lightmap=await new Promise((resolve,reject)=>{const t=new B.Texture('/assets/mirror8_final.ktx2',scene,undefined,undefined,undefined,()=>resolve(t),(m,e)=>reject(Error(m)));setTimeout(()=>reject(Error('Lightmap timeout')),60000);});
+   const lm=meshes.find(m=>m.name.startsWith('lightmap_'));
+   if(!lm)throw Error('No KaDshow lightmap marker');
+   const lightmap=await new Promise((resolve,reject)=>{const t=new B.Texture('/assets/'+encodeURIComponent(lm.name.slice(9))+'.ktx2',scene,undefined,undefined,undefined,()=>resolve(t),(m,e)=>reject(Error(m)));setTimeout(()=>reject(Error('Lightmap timeout')),60000);});
    lightmap.coordinatesIndex=1;
-   const lm=meshes.find(m=>m.name.startsWith('lightmap_')),clones=new Map();
+   const clones=new Map();
    for(const mesh of lm.getChildMeshes())if(mesh.material){
     const old=mesh.material;
     if(!clones.has(old)){
@@ -55,6 +57,7 @@ async function main(){
    window.review={scene,engine,camera,meshes,sky,env,lightmap,lm};
    return {status:'passed',babylon:B.Engine.Version,webgl:engine.webGLVersion,renderer:engine.getGlInfo(),importedNodes:meshes.length,lights:lights.length,
     visibleTriangles:lm.getChildMeshes().reduce((n,m)=>n+m.getTotalIndices()/3,0),textures,materialPlugin:'actual extracted PbrLightmapMaterialPlugin',
+    runtimeMaterials:[...clones.values()].map(m=>({name:m.name,metallic:m.metallic,roughness:m.roughness,backFaceCulling:m.backFaceCulling})),
     limits:'WebGL harness with actual app parser/plugin; React lifecycle and physics worker not exercised'};
   });
   await page.locator('canvas').screenshot({path:path.join(output,'room-arrival.png')});
@@ -67,6 +70,23 @@ async function main(){
   }
   await page.evaluate(()=>{const r=review;r.camera.position.set(3,1.65,2.9);r.camera.setTarget(new BABYLON.Vector3(-.5,1,-1));r.scene.render();});
   await page.locator('canvas').screenshot({path:path.join(output,'room-reverse.png')});
+  if(process.env.REVIEW_CHAIR){
+   const views=[['front',[-1.65,1.1,-1.5],[-2.8,.55,-.17]],['back',[-1.55,1.1,1.5],[-2.8,.6,-.17]]];
+   for(const [name,position,target] of views){
+    await page.evaluate(({position,target})=>{const r=review;r.camera.fov=2*Math.atan(.4);r.camera.position.set(...position);r.camera.setTarget(new BABYLON.Vector3(...target));r.scene.render();},{position,target});
+    await page.locator('canvas').screenshot({path:path.join(output,'chair-'+name+'.png')});
+   }
+   await page.evaluate(()=>{review.camera.fov=1.25;});
+  }
+  if(process.env.REVIEW_EXTERIOR){
+   const views=[['east',[11,1.8,0]],['west',[-11,1.8,0]],['north',[0,1.8,10]],['south',[0,1.8,-10]],['above',[0,13,0]],['below',[0,-10,0]]];
+   for(const [name,position] of views){
+    await page.evaluate(({name,position})=>{const r=review;r.sky.setEnabled(false);r.camera.position.set(...position);r.camera.upVector.set(0,['above','below'].includes(name)?0:1,['above','below'].includes(name)?1:0);r.camera.setTarget(new BABYLON.Vector3(0,1.8,0));r.scene.render();},{name,position});
+    await page.locator('canvas').screenshot({path:path.join(output,'exterior-'+name+'.png')});
+   }
+   await page.evaluate(()=>{review.camera.upVector.set(0,1,0);});
+   result.exteriorViews=views.map(([name])=>name);
+  }
   await page.evaluate(()=>{const r=review;for(const m of r.meshes)m.setEnabled(false);r.sky.setEnabled(false);r.camera.position.set(0,1.5,-6);r.camera.setTarget(new BABYLON.Vector3(0,1,0));
    for(let i=0;i<3;i++){const s=BABYLON.MeshBuilder.CreateSphere('runtime probe '+i,{diameter:1.4,segments:32},r.scene);s.position.set((i-1)*1.8,1,0);const m=new BABYLON.PBRMaterial('probe '+i,r.scene);m.albedoColor.set(.7,.7,.7);m.metallic=i?1:0;m.roughness=i===1?.05:.65;s.material=m;}r.scene.render();});
   await page.waitForTimeout(1000);await page.locator('canvas').screenshot({path:path.join(output,'runtime-ibl-probes.png')});
