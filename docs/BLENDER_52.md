@@ -1,5 +1,7 @@
 # Blender 5.2 compatibility and bedroom export
 
+This page records the initial 3.3.3 compatibility/export investigation. Version 3.3.4 adds [optional integrated KTX2 conversion](KTX2_EXPORT.md); its generated installer supersedes the 3.3.3 installer below. The initial unconverted artifact and its validation evidence remain unchanged.
+
 Tested 2026-09-21 with Blender **5.2.2 LTS / Python 3.13.13** and the current KaDshow Babylon **7.27.0** dependency. Fork baseline: `949d71f7a0d1e53aa768f3da0e6ba3c25022c99d`. Local add-on version: **3.3.3**.
 
 ## Changes

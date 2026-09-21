@@ -1,5 +1,7 @@
 # KaDshow exporter contract and remaining gaps
 
+Update for 3.3.4: [optional KTX2 conversion](KTX2_EXPORT.md) now prepares/converts material images and an explicitly selected or unambiguously identified KaDshow lightmap, updates delivery references, and validates before publishing. The report below describes the initial 3.3.3 artifact. Environment/skybox generation, runtime light authoring, a general KaDshow delivery-selection preset and in-app visual acceptance remain separate work.
+
 Analysis date: 2026-09-21. Read-only source: WSL `/home/d_a_s/code/kadshow/KaDshow_Web`, commit `7191be0b0931e81f60863407bb4590d396685525`. KaDshow was not modified. `code_info` tools were unavailable, so scoped source reads and searches were used. Exporter baseline/fixes and evidence are in [BLENDER_52.md](BLENDER_52.md).
 
 ## What already survives the patched export

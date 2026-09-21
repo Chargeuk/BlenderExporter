@@ -23,7 +23,10 @@ from .node import Node
 class JsonExporter:
     nameSpace   = None  # assigned in execute
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    def execute(self, context, filepath, objects):
+    def execute(self, context, filepath, objects, ktx_options=None):
+        if ktx_options is not None:
+            from .ktx_export import execute_with_ktx
+            return execute_with_ktx(self, context, filepath, objects, ktx_options)
         scene = context.scene
         self.scene = scene # reference for passing
         self.settings = scene.world

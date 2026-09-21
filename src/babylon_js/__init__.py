@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 3),
+    'version': (3, 3, 4),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -44,6 +44,11 @@ if "bpy" in locals():
         importlib.reload(world)
 
 #===============================================================================
+def update_ktx_defaults(operator, context):
+    from .ktx_export import autofill_lightmap
+    autofill_lightmap(operator, context)
+
+
 class JsonMain(bpy.types.Operator, ExportHelper):
     bl_idname = 'export.bjs'
     bl_label = 'Export Babylon.js scene' # used on the label of the actual 'save' button
@@ -58,6 +63,30 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         default=False
     )
 
+    convert_to_ktx2: bpy.props.BoolProperty(
+        name='Convert textures to KTX2', default=False, update=update_ktx_defaults,
+        description='Stage, prepare PNGs, compress textures and update the exported model; requires KTX-Software 4.4.2+')
+    ktx_executable: bpy.props.StringProperty(
+        name='KTX executable', subtype='FILE_PATH', default='',
+        description='Optional path to ktx; leave empty to find it on PATH')
+    ktx_flip_y: bpy.props.BoolProperty(
+        name='Flip images vertically', default=True,
+        description='Flip prepared PNG copies for Babylon compressed texture orientation; originals remain unchanged')
+    ktx_codec: bpy.props.EnumProperty(
+        name='Material compression', default='basis-lz',
+        items=[('basis-lz', 'ETC1S (smaller files)', 'BasisLZ level 5, quality 255'),
+               ('uastc', 'UASTC (higher quality)', 'UASTC quality 4 with Zstandard')])
+    ktx_threads: bpy.props.IntProperty(name='Encoder threads', default=8, min=1, max=128)
+    ktx_auto_lightmap: bpy.props.BoolProperty(
+        name='Find KaDshow lightmap automatically', default=True, update=update_ktx_defaults,
+        description='Use a unique saved image from a marker property/name, explicit UV2 connection or lightmap/SimpleBake keyword')
+    ktx_lightmap: bpy.props.StringProperty(
+        name='KaDshow lightmap image', subtype='FILE_PATH', default='',
+        description='Optional source PNG/EXR for a lightmap_ parent; UASTC, sRGB PNG baseline, no mipmaps')
+    ktx_lightmap_marker: bpy.props.StringProperty(
+        name='Lightmap marker', default='',
+        description='Exact exported lightmap_ node name; empty selects the only marker in the export')
+
     def execute(self, context):
         from .json_exporter import JsonExporter
         from .package_level import get_title, verify_min_blender_version
@@ -68,7 +97,13 @@ class JsonMain(bpy.types.Operator, ExportHelper):
 
         exporter = JsonExporter()
         objects = bpy.context.selected_objects if self.export_selected else bpy.context.scene.objects
-        exporter.execute(context, self.filepath, objects)
+        options = None
+        if self.convert_to_ktx2:
+            options = dict(executable=self.ktx_executable, flip_y=self.ktx_flip_y,
+                           codec=self.ktx_codec, threads=self.ktx_threads,
+                           lightmap=self.ktx_lightmap, lightmap_marker=self.ktx_lightmap_marker,
+                           auto_lightmap=self.ktx_auto_lightmap)
+        exporter.execute(context, self.filepath, objects, ktx_options=options)
 
         if (exporter.fatalError):
             self.report({'ERROR'}, exporter.fatalError)
@@ -91,6 +126,30 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             text='Other export settings in properties panels'
         )
         self.layout.prop(self, 'export_selected')
+        from .ktx_export import find_ktx
+        box = self.layout.box()
+        box.prop(self, 'ktx_executable')
+        tool, status = find_ktx(self.ktx_executable)
+        row = box.row()
+        row.enabled = bool(tool) or self.convert_to_ktx2
+        row.prop(self, 'convert_to_ktx2')
+        box.label(text=status, icon='CHECKMARK' if tool else 'INFO')
+        if self.convert_to_ktx2:
+            options = box.column()
+            options.enabled = bool(tool)
+            options.prop(self, 'ktx_flip_y')
+            options.prop(self, 'ktx_codec')
+            options.prop(self, 'ktx_threads')
+            options.prop(self, 'ktx_auto_lightmap')
+            options.prop(self, 'ktx_lightmap')
+            options.prop(self, 'ktx_lightmap_marker')
+            if self.ktx_auto_lightmap and not self.ktx_lightmap:
+                from .ktx_export import infer_lightmap
+                objects = context.selected_objects if self.export_selected else context.scene.objects
+                found = infer_lightmap(context, objects, self.ktx_lightmap_marker)
+                box.label(text=found['reason'], icon='INFO')
+            if context.scene.world and context.scene.world.inlineTextures:
+                box.label(text='Disable Inline textures in World settings', icon='ERROR')
 #===============================================================================
 # The list of classes which sub-class a Blender class, which needs to be registered
 from . import camera
