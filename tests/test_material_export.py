@@ -28,7 +28,7 @@ def run(name,options=None,staged=False):
     assert not e.fatalError,e.fatalError
     data=json.loads((out/(name+'.babylon')).read_text());return {m['name']:m for m in data['materials']}
 def close(a,b):assert math.isclose(a,b,abs_tol=1e-5),(a,b)
-for name,options,staged,expected in [('default',None,False,(.5,.4)),('staged',dict(metallic=.7,roughness=.9),True,(.7,.9)),('neutral',dict(metallic=1,roughness=1),False,(1,1))]:
+for name,options,staged,expected in [('default',None,False,(1,.8)),('staged',dict(metallic=.7,roughness=.9),True,(.7,.9)),('neutral',dict(metallic=1,roughness=1),False,(1,1))]:
     result=run(name,options,staged)
     close(result['Packed']['metallic'],expected[0]);close(result['Packed']['roughness'],expected[1])
     close(result['Flat']['metallic'],.6*expected[0]);close(result['Flat']['roughness'],.8*expected[1])
@@ -47,6 +47,6 @@ target=out/'preserved.babylon';target.write_text('previous')
 bad=JsonExporter();bad.execute(bpy.context,str(target),[cube],material_options={'metallic':float('nan')})
 assert bad.fatalError and target.read_text()=='previous'
 props=bpy.ops.export.bjs.get_rna_type().properties
-close(props['material_metallic_multiplier'].default,.5);close(props['material_roughness_multiplier'].default,.4)
+close(props['material_metallic_multiplier'].default,1);close(props['material_roughness_multiplier'].default,.8)
 (out/'result.json').write_text(json.dumps(dict(status='passed',checks=['textured defaults','untextured factors','neutral override','staged explicit overrides','unchanged source nodes and links','standard materials unaffected','real operator controls','invalid settings preserve output']),indent=2))
 print('MATERIAL_EXPORT_TEST_PASSED',str(out))

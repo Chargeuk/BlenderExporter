@@ -83,6 +83,9 @@ def prepare_blender(spec, directory):
         bpy.data.images.remove(image)
     if not np.isfinite(array).all():
         raise ValueError('Non-finite texture pixels: ' + str(source))
+    source_dimensions = [width, height]
+    array = core.resize_lightmap(array, spec, hdr)
+    height, width = array.shape[:2]
     metrics = {}
     if spec.get('encoding') == 'rgbd-v1':
         if not hdr:
@@ -119,7 +122,7 @@ def prepare_blender(spec, directory):
     _write_png(prepared, pixels)
     if core.sha(source) != source_hash:
         raise RuntimeError('Source changed while preparing image')
-    return prepared, dict(source_sha256=source_hash, dimensions=[width, height], channels=pixels.shape[2],
+    return prepared, dict(source_sha256=source_hash, source_dimensions=source_dimensions, dimensions=[width, height], channels=pixels.shape[2],
                           prepared=str(prepared), prepared_sha256=core.sha(prepared), **metrics)
 
 
@@ -280,6 +283,7 @@ def make_config(raw_model, work, options, context=None, objects=()):
         rgbd = encoding == 'rgbd-v1'
         output = core.lightmap_output_name(source.stem + ('_rgbd' if rgbd else '') + '.ktx2')
         specs.append(dict(source=str(source), output=output, lightmap_markers=[marker], encoding=encoding,
+                          size=core.lightmap_size(options.get('lightmap_size', 0)),
                           flip_y=options.get('flip_y', True), color_space='linear' if rgbd else 'srgb',
                           codec='uastc', mipmaps=False, alpha='preserve' if rgbd else 'discard'))
     return dict(version=1, output_dir=str(work / 'converted'),
@@ -319,7 +323,7 @@ def publish_package(package, destination, backup):
         raise
 
 
-def execute_with_ktx(exporter, context, filepath, objects, options, material_options=None):
+def execute_with_ktx(exporter, context, filepath, objects, options, material_options=None, lighting_options=None):
     """Called by JsonExporter only when the option is explicitly enabled."""
     import bpy
     exporter.fatalError = None
@@ -356,7 +360,7 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
         try:
             settings.textureDir = 'source_textures'  # contained staging regardless of user's textureDir
             objects = list(objects)
-            exporter.execute(context, str(raw), objects, material_options=material_options)
+            exporter.execute(context, str(raw), objects, material_options=material_options, lighting_options=lighting_options)
         finally:
             settings.textureDir = old_dir
         if exporter.fatalError or exporter.nErrors:

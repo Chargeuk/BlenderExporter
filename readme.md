@@ -2,6 +2,9 @@
 
 ## Chargeuk fork: Blender 5.2, KTX2 and Basis skybox export
 
+Version3.3.10 adds [lightmap export sizes](docs/LIGHTMAP_RESOLUTION.md) and [saved lighting-node dialog defaults](docs/LIGHTING_PROFILE.md). Current PBR defaults are metallic1.0 / roughness0.8.
+
+
 Version3.3.7 defaults PBR export multipliers to **metallic0.5 / roughness0.4**, matching the user's KaDshow comparison. Both are editable and preserve Blender source materials. See [material controls and tests](docs/MATERIAL_EXPORT.md).
 
 Version 3.3.6 adds optional **Export KaDshow environment lighting**: a saved room EXR/HDR becomes a validated `environment.env`, with selectable face size defaulting to **512**, exposure/highlight controls and a delivery-only `hasenv` marker. See [ENV setup, capture contract and tests](docs/ENV_EXPORT.md). The local converter requires Node.js, the pinned Babylon helper and Chromium; it does not start a Blender render.
@@ -24,3 +27,8 @@ If you think something missing in the Blender exporter documentation, please rep
 ## Changelog
 
 Changelog can be [found here](https://github.com/BabylonJS/BlenderExporter/blob/master/changelog.md).
+
+
+## KaDshow lighting profiles
+
+Exporter 3.3.9 writes versioned runtime lighting settings on lightmap markers, defaults to metallic/roughness multipliers 1.0/0.8, and supports an explicit Original mode for older bakes. See [lighting profile and debug controls](docs/LIGHTING_PROFILE.md).

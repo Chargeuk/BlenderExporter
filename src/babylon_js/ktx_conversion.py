@@ -44,6 +44,48 @@ def lightmap_output_name(value):
     return stem + '.ktx2'
 
 
+def lightmap_size(value):
+    if type(value) is not int or value not in (0, 512, 1024, 2048):
+        raise ValueError('Lightmap size must be 0 (original), 512, 1024 or 2048')
+    return value
+
+
+def resize_lightmap(array, spec, hdr):
+    """Area-average linear light before RGBD/gamma encoding; never upscale."""
+    import numpy as np
+    target = lightmap_size(spec.get('size', 0))
+    h, w = array.shape[:2]
+    if not target:
+        return array
+    if h != w:
+        raise ValueError('A fixed lightmap size requires a square source')
+    if target >= w:
+        return array
+    result = np.asarray(array, dtype=np.float32).copy()
+    srgb = not hdr and spec['color_space'] == 'srgb'
+    if srgb:
+        rgb = result[..., :3]
+        result[..., :3] = np.where(rgb <= .04045, rgb / 12.92, ((rgb + .055) / 1.055) ** 2.4)
+    for axis in (0, 1):
+        src = np.moveaxis(result, axis, 0)
+        length = len(src)
+        if length % target == 0:
+            dst = src.reshape(target, length // target, *src.shape[1:]).mean(axis=1)
+        else:
+            # Exact box integration for non-power-of-two square sources.
+            cumulative = np.concatenate((np.zeros_like(src[:1], dtype=np.float64), np.cumsum(src, axis=0, dtype=np.float64)))
+            edges = np.linspace(0, length, target + 1)
+            ix = np.minimum(edges.astype(int), length - 1)
+            f = (edges - ix).reshape((-1,) + (1,) * (src.ndim - 1))
+            integral = cumulative[ix] + f * src[ix]
+            dst = np.diff(integral, axis=0) / (length / target)
+        result = np.moveaxis(dst.astype(np.float32), 0, axis)
+    if srgb:
+        rgb = result[..., :3]
+        result[..., :3] = np.where(rgb <= .0031308, rgb * 12.92, 1.055 * np.maximum(rgb, 0) ** (1 / 2.4) - .055)
+    return result
+
+
 def encode_rgbd(rgb):
     """rgbd-v1: Babylon 7.27 default gamma2.2 RGBD in RGBA8 UNORM."""
     import numpy as np
@@ -132,6 +174,9 @@ def load_plan(config_path):
         spec.setdefault('alpha', 'preserve')
         if spec['alpha'] not in ('preserve', 'opaque', 'discard'):
             raise ValueError('alpha must be preserve, opaque or discard')
+        spec['size'] = lightmap_size(spec.get('size', 0))
+        if spec['size'] and not spec.get('lightmap_markers'):
+            raise ValueError('Fixed size is supported for marker lightmaps only')
         spec.setdefault('encoding', 'legacy')
         if spec['encoding'] not in ('legacy', 'rgbd-v1'):
             raise ValueError('Unsupported lightmap encoding: ' + str(spec['encoding']))
@@ -225,6 +270,8 @@ def prepare(spec, directory):
         raw = cv2.imread(str(source), cv2.IMREAD_UNCHANGED)
         if raw is None or raw.ndim != 3 or raw.shape[2] not in (3, 4):
             raise ValueError(f'Cannot decode RGB HDR image: {source}')
+        source_dimensions = [raw.shape[1], raw.shape[0]]
+        raw = resize_lightmap(raw, spec, True)
         rgb = raw[:, :, [2, 1, 0]].astype(np.float32)
         if not np.isfinite(rgb).all():
             raise ValueError(f'Non-finite RGB values: {source}')
@@ -252,6 +299,9 @@ def prepare(spec, directory):
             if original.mode not in ('RGB', 'RGBA', 'L', 'LA', 'P', '1'):
                 raise ValueError(f'Convert unsupported PNG/input mode {original.mode} explicitly: {source}')
             image = original.convert('RGBA')
+        source_dimensions = list(image.size)
+        array = resize_lightmap(np.asarray(image).astype(np.float32) / 255, spec, False)
+        image = Image.fromarray(np.rint(np.clip(array, 0, 1) * 255).astype(np.uint8))
         if spec['alpha'] == 'opaque' and image.getchannel('A').getextrema() != (255, 255):
             raise ValueError(f'Non-opaque source: {source}')
         if spec['alpha'] != 'preserve':
@@ -265,7 +315,7 @@ def prepare(spec, directory):
         expected = np.asarray(image)[::-1] if spec['flip_y'] else np.asarray(image)
         if not np.array_equal(np.asarray(reopened), expected):
             raise RuntimeError('PNG/flip verification failed')
-    return prepared, dict(source_sha256=sha(source), dimensions=list(image.size),
+    return prepared, dict(source_sha256=sha(source), source_dimensions=source_dimensions, dimensions=list(image.size),
                           channels=len(image.getbands()), prepared=str(prepared),
                           prepared_sha256=sha(prepared), **metrics)
 

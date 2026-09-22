@@ -17,6 +17,8 @@ from os import path, makedirs
 import time
 import calendar
 import math
+import json
+from .lighting_profile import lighting_profile, apply_lighting_profile
 
 from .node import Node
 
@@ -24,13 +26,14 @@ from .node import Node
 class JsonExporter:
     nameSpace   = None  # assigned in execute
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    def execute(self, context, filepath, objects, ktx_options=None, material_options=None):
+    def execute(self, context, filepath, objects, ktx_options=None, material_options=None, lighting_options=None):
         # Export-only calibration requested for this KaDshow fork. Do not mutate
         # Blender materials or bake inputs; 1/1 restores unscaled source values.
-        self.material_options = dict(metallic=.5, roughness=.4)
+        self.material_options = dict(metallic=1.0, roughness=.8)
         if material_options is not None:
             self.material_options.update(material_options)
         try:
+            self.lighting_options = lighting_profile(lighting_options)
             for key in ('metallic', 'roughness'):
                 value = float(self.material_options[key])
                 if not math.isfinite(value) or not 0 <= value <= 1:
@@ -42,7 +45,7 @@ class JsonExporter:
             return
         if ktx_options is not None:
             from .ktx_export import execute_with_ktx
-            return execute_with_ktx(self, context, filepath, objects, ktx_options, self.material_options)
+            return execute_with_ktx(self, context, filepath, objects, ktx_options, self.material_options, self.lighting_options)
         scene = context.scene
         self.scene = scene # reference for passing
         self.settings = scene.world
@@ -182,6 +185,11 @@ class JsonExporter:
             # output file
             if log.nErrors == 0:
                 self.to_json_file()
+                with open(filepath, 'r', encoding='utf8') as exported:
+                    model = json.load(exported)
+                if apply_lighting_profile(model, self.lighting_options):
+                    with open(filepath, 'w', encoding='utf8') as exported:
+                        json.dump(model, exported, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
             else:
                 Logger.log('Output cancelled due to data error')
 

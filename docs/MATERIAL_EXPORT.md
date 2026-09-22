@@ -1,4 +1,8 @@
-# PBR export calibration — 3.3.7
+# Current defaults (3.3.9)
+
+Metallic **1.0**, roughness **0.8**, with editable overrides. These supersede the earlier 0.5/0.4 defaults below. They remain multipliers of packed channels or untextured source values. See [runtime lighting profiles](LIGHTING_PROFILE.md) for the separate shader settings and compatibility rules.
+
+# PBR export calibration â€” 3.3.7
 
 The user compared the bedroom in KaDshow with Blender and selected **metallic 0.5 / roughness 0.4** for the exported shared material. These are the new defaults in this fork, with editable controls in the export dialog. They are visual calibration for this workflow, not a universal physical equivalence between renderers.
 

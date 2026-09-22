@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 8),
+    'version': (3, 3, 10),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -85,11 +85,22 @@ class JsonMain(bpy.types.Operator, ExportHelper):
     )
 
     material_metallic_multiplier: bpy.props.FloatProperty(
-        name='Metallic export multiplier', default=.5, min=0, max=1,
+        name='Metallic export multiplier', default=1.0, min=0, max=1,
         description='Scale exported PBR metallic values only; 1 preserves source response, Blender materials remain unchanged')
     material_roughness_multiplier: bpy.props.FloatProperty(
-        name='Roughness export multiplier', default=.4, min=0, max=1,
+        name='Roughness export multiplier', default=.8, min=0, max=1,
         description='Scale exported PBR roughness values only; 1 preserves source response, Blender materials remain unchanged')
+
+    lighting_mode: bpy.props.EnumProperty(
+        name='KaDshow lighting shader', default='shadow-aware',
+        items=(('original', 'Original (older bakes)', 'Keep original runtime lighting for older scenes'),
+               ('experimental', 'Experimental', 'First comparison shader'),
+               ('shadow-aware', 'Shadow-aware reflections', 'Use brightness-dependent reflection suppression')))
+    lighting_baked_intensity: bpy.props.FloatProperty(name='Baked light strength', default=1, min=0, max=4)
+    lighting_reflection_intensity: bpy.props.FloatProperty(name='Reflection strength', default=1, min=0, max=4)
+    lighting_shadow_suppression: bpy.props.FloatProperty(name='Shadow suppression', default=2, min=0, max=8)
+    lighting_fully_lit_threshold: bpy.props.FloatProperty(name='Fully lit threshold', default=1, min=.01, max=8)
+    lighting_highlight_preservation: bpy.props.FloatProperty(name='Highlight preservation', default=1, min=0, max=1)
 
     convert_to_ktx2: bpy.props.BoolProperty(
         name='Convert textures to KTX2', default=False, update=update_ktx_defaults,
@@ -115,6 +126,13 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         name='KaDshow lightmap encoding', default='legacy',
         items=(('legacy', 'Legacy LDR', 'Existing lightmap format; values above one are clipped'),
                ('rgbd-v1', 'RGBD HDR (requires updated KaDshow)', 'Preserve HDR lighting in RGBA; opt-in metadata and UASTC')))
+    ktx_lightmap_size: bpy.props.EnumProperty(
+        name='Lightmap export size', default='0',
+        description='Downsample the export copy in linear light before encoding; preserve the source and never upscale',
+        items=(('0', 'Original size', 'Keep source resolution'),
+               ('2048', '2048 x 2048', 'Maximum 2K square'),
+               ('1024', '1024 x 1024', 'Maximum 1K square'),
+               ('512', '512 x 512', 'Maximum 512 square')))
     ktx_lightmap_marker: bpy.props.StringProperty(
         name='Lightmap marker', default='',
         description='Exact exported lightmap_ node name; empty selects the only marker in the export')
@@ -165,6 +183,15 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         name='ENV highlight threshold',default=1,min=.001,max=10000,
         description='Linear luminance where gain starts; reaches full strength at twice this threshold')
 
+    def invoke(self, context, event):
+        from .lighting_profile import prefill_lighting_options
+        try:
+            prefill_lighting_options(self, context)
+        except (ValueError, TypeError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        return ExportHelper.invoke(self, context, event)
+
     def execute(self, context):
         from .json_exporter import JsonExporter
         from .package_level import get_title, verify_min_blender_version
@@ -181,6 +208,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                            codec=self.ktx_codec, threads=self.ktx_threads,
                            lightmap=self.ktx_lightmap, lightmap_marker=self.ktx_lightmap_marker,
                            auto_lightmap=self.ktx_auto_lightmap, lightmap_encoding=self.ktx_lightmap_encoding,
+                           lightmap_size=int(self.ktx_lightmap_size),
                            convert_materials=self.convert_to_ktx2)
             if self.export_skybox:
                 options['skybox'] = dict(executable=self.basis_executable, image=self.skybox_image,
@@ -192,7 +220,12 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                     highlight_gain=self.environment_highlight_gain,highlight_threshold=self.environment_highlight_threshold)
         exporter.execute(context, self.filepath, objects, ktx_options=options,
                          material_options=dict(metallic=self.material_metallic_multiplier,
-                                               roughness=self.material_roughness_multiplier))
+                                               roughness=self.material_roughness_multiplier),
+                         lighting_options=dict(mode=self.lighting_mode, bakedIntensity=self.lighting_baked_intensity,
+                                               reflectionIntensity=self.lighting_reflection_intensity,
+                                               shadowSuppression=self.lighting_shadow_suppression,
+                                               fullyLitThreshold=self.lighting_fully_lit_threshold,
+                                               highlightPreservation=self.lighting_highlight_preservation))
 
         if (exporter.fatalError):
             self.report({'ERROR'}, exporter.fatalError)
@@ -219,6 +252,15 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         material.label(text='PBR export calibration (KaDshow)')
         material.prop(self, 'material_metallic_multiplier')
         material.prop(self, 'material_roughness_multiplier')
+        lighting = self.layout.box()
+        lighting.label(text='KaDshow runtime lighting (lightmap markers)')
+        lighting.prop(self, 'lighting_mode')
+        if self.lighting_mode != 'original':
+            for field in ('lighting_baked_intensity', 'lighting_reflection_intensity',
+                          'lighting_shadow_suppression', 'lighting_fully_lit_threshold',
+                          'lighting_highlight_preservation'):
+                lighting.prop(self, field)
+        lighting.label(text='Choose Original when re-exporting older, unchanged bakes')
         from .ktx_export import find_ktx
         box = self.layout.box()
         box.prop(self, 'ktx_executable')
@@ -237,6 +279,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             options.prop(self, 'ktx_lightmap')
             options.prop(self, 'ktx_lightmap_marker')
             options.prop(self, 'ktx_lightmap_encoding')
+            options.prop(self, 'ktx_lightmap_size')
             if self.ktx_auto_lightmap and not self.ktx_lightmap:
                 from .ktx_export import infer_lightmap
                 objects = context.selected_objects if self.export_selected else context.scene.objects
