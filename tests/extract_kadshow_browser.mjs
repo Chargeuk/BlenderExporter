@@ -9,6 +9,17 @@ const specs=[['Utils/babylonjs/kadShowSceneLoader.ts','KadShowSceneLoader',
  ['tempIndexContainer','tempMaterialIndexContainer','isDescendantOf','parseMaterialByPredicate','findMaterial','findParent','logOperation','loadDetailLevels','ImportBabylonMeshesAndLights']],
  ['materials/pbrLightmapMaterialPlugin.ts','PbrLightmapMaterialPlugin',null]];
 const hashes={};let combined='';
+for(const [relative,names] of [
+ ['materials/lightmapEncoding.ts',['getLightmapEncoding','configureLightmapEncoding','getRGBDMinDivisor']],
+ ['Components/interactables/Environment.tsx',['extractLightmapName']]]){
+ const file=path.join(repo,'fe/client/src',relative),text=fs.readFileSync(file,'utf8');
+ const source=ts.createSourceFile(file,text,ts.ScriptTarget.Latest,true);
+ const declarations=source.statements.filter(n=>ts.isFunctionDeclaration(n)&&names.includes(n.name?.text));
+ if(declarations.length!==names.length)throw Error('Lightmap contract functions changed');
+ const code=declarations.map(n=>n.getText(source).replace(/^export\s+/, '')).join('\n');
+ combined+=ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+ hashes[relative]=crypto.createHash('sha256').update(text).digest('hex');
+}
 for(const [relative,name,names] of specs){
  const file=path.join(repo,'fe/client/src',relative),text=fs.readFileSync(file,'utf8');
  const source=ts.createSourceFile(file,text,ts.ScriptTarget.Latest,true);

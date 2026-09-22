@@ -1,5 +1,12 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.8 (22 September 2026)
+
+- Opt-in RGBD HDR lightmaps, retaining legacy defaults; explicit encoding metadata and a compression-safe minimum divisor.
+- Canonical KaDshow lightmap filenames to prevent repeated-prefix URL mismatches.
+- Explicit opaque PBR serialization and shared opaque/cutout alpha preservation.
+- Numeric, real Blender/KTX and Chromium/WebGL regression checks; see docs/KTX2_EXPORT.md.
+
 ## Blender 3.3.2 ##
 * 31 August 2023
 

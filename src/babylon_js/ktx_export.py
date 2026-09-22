@@ -84,28 +84,33 @@ def prepare_blender(spec, directory):
     if not np.isfinite(array).all():
         raise ValueError('Non-finite texture pixels: ' + str(source))
     metrics = {}
-    if hdr:
-        rgb = array[:, :, :3]
-        metrics = dict(linear_min=float(rgb.min()), linear_max=float(rgb.max()),
-                       pixels_above_one_percent=float(np.mean(np.any(rgb > 1, axis=2)) * 100))
-        rgb = np.clip(rgb, 0, 1)
-        if spec['color_space'] == 'srgb':
-            rgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1 / 2.4) - 0.055)
-        array[:, :, :3] = rgb
-    if spec['alpha'] == 'opaque' and not np.all(array[:, :, 3] == 1):
-        raise ValueError('Non-opaque source: ' + str(source))
-    if spec['alpha'] != 'preserve' or np.all(array[:, :, 3] == 1):
-        array = array[:, :, :3]
-    with source.open('rb') as stream:
-        header = stream.read(29)
-    png16 = header.startswith(b'\x89PNG\r\n\x1a\n') and header[24] == 16
-    if png16 and not hdr:
-        # Match the established Pillow PNG baseline: take the high byte of
-        # each 16-bit channel, rather than introduce different 8-bit rounding.
-        pixels = (np.rint(np.clip(array, 0, 1) * 65535).astype(np.uint16) >> 8).astype(np.uint8)
-        metrics['png_16_to_8'] = 'high byte (baseline)'
+    if spec.get('encoding') == 'rgbd-v1':
+        if not hdr:
+            raise ValueError('RGBD lightmaps require a linear HDR/EXR source')
+        pixels, metrics = core.encode_rgbd(array[:, :, :3])
     else:
-        pixels = np.rint(np.clip(array, 0, 1) * 255).astype(np.uint8)
+        if hdr:
+            rgb = array[:, :, :3]
+            metrics = dict(linear_min=float(rgb.min()), linear_max=float(rgb.max()),
+                           pixels_above_one_percent=float(np.mean(np.any(rgb > 1, axis=2)) * 100))
+            rgb = np.clip(rgb, 0, 1)
+            if spec['color_space'] == 'srgb':
+                rgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1 / 2.4) - 0.055)
+            array[:, :, :3] = rgb
+        if spec['alpha'] == 'opaque' and not np.all(array[:, :, 3] == 1):
+            raise ValueError('Non-opaque source: ' + str(source))
+        if spec['alpha'] != 'preserve' or np.all(array[:, :, 3] == 1):
+            array = array[:, :, :3]
+        with source.open('rb') as stream:
+            header = stream.read(29)
+        png16 = header.startswith(b'\x89PNG\r\n\x1a\n') and header[24] == 16
+        if png16 and not hdr:
+            # Match the established Pillow PNG baseline: take the high byte of
+            # each 16-bit channel, rather than introduce different 8-bit rounding.
+            pixels = (np.rint(np.clip(array, 0, 1) * 65535).astype(np.uint16) >> 8).astype(np.uint8)
+            metrics['png_16_to_8'] = 'high byte (baseline)'
+        else:
+            pixels = np.rint(np.clip(array, 0, 1) * 255).astype(np.uint8)
     stem = Path(spec['output']).stem
     _write_png(directory / (stem + '_unflipped.png'), pixels)
     if spec['flip_y']:
@@ -238,6 +243,9 @@ def make_config(raw_model, work, options, context=None, objects=()):
         if reference in seen:
             if seen[reference] != policy:
                 raise ValueError('One image has conflicting colour/data uses; separate it or use the standalone manifest: ' + reference)
+            if texture.get('hasAlpha', False):
+                # A shared atlas can be opaque on one material and a cutout on another.
+                next(spec for spec in specs if reference in spec.get('references', []))['alpha'] = 'preserve'
             continue
         seen[reference] = policy
         # Opaque sources are common, but preserve alpha unless known not to be used.
@@ -266,8 +274,14 @@ def make_config(raw_model, work, options, context=None, objects=()):
             marker = names[0]
         if marker not in names:
             raise ValueError('Lightmap marker is not in the exported selection: ' + marker)
-        specs.append(dict(source=str(source), output=source.stem + '.ktx2', lightmap_markers=[marker],
-                          flip_y=options.get('flip_y', True), color_space='srgb', codec='uastc', mipmaps=False, alpha='discard'))
+        encoding = options.get('lightmap_encoding', 'legacy')
+        if encoding not in ('legacy', 'rgbd-v1'):
+            raise ValueError('Unsupported lightmap encoding: ' + str(encoding))
+        rgbd = encoding == 'rgbd-v1'
+        output = core.lightmap_output_name(source.stem + ('_rgbd' if rgbd else '') + '.ktx2')
+        specs.append(dict(source=str(source), output=output, lightmap_markers=[marker], encoding=encoding,
+                          flip_y=options.get('flip_y', True), color_space='linear' if rgbd else 'srgb',
+                          codec='uastc', mipmaps=False, alpha='preserve' if rgbd else 'discard'))
     return dict(version=1, output_dir=str(work / 'converted'),
                 models=[dict(source=str(raw_model), output=raw_model.name)], textures=specs)
 

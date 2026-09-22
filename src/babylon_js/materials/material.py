@@ -348,11 +348,14 @@ class BJSMaterial:
 
         # sources diffuse, transparency & principled nodes
         alpha = self.bjsNodeTree.diffuseAlpha if self.bjsNodeTree.diffuseAlpha is not None else 1.0
-        if alpha != DEF_ALPHA: write_float(file_handler, 'alpha', alpha)
+        opaque = self.isPBR and self.transparencyMode == PBRMATERIAL_OPAQUE
+        if opaque:
+            alpha = 1.0
+        if opaque or alpha != DEF_ALPHA: write_float(file_handler, 'alpha', alpha)
 
         # properties specific to PBR
         if self.isPBR:
-            if self.transparencyMode != DEF_TRANSPARENCY_MODE: write_int(file_handler, 'transparencyMode', self.transparencyMode)
+            write_int(file_handler, 'transparencyMode', self.transparencyMode)
             if not same_number(self.alphaCutOff, DEF_ALPHA_CUTOFF): write_float(file_handler, 'alphaCutOff', self.alphaCutOff)
 
             # source principle node
@@ -430,10 +433,15 @@ class BJSMaterial:
             tex = self.textures[DIFFUSE_TEX]
             texType = ALBEDO_TEX if self.isPBR else DIFFUSE_TEX
             self.textures[DIFFUSE_TEX].textureType = texType
-            tex.to_json_file(file_handler)
-
-            if self.isPBR:
-                write_bool(file_handler, 'useAlphaFromAlbedoTexture', tex.hasAlpha)
+            saved_alpha = tex.hasAlpha
+            try:
+                if opaque:
+                    tex.hasAlpha = False
+                tex.to_json_file(file_handler)
+                if self.isPBR:
+                    write_bool(file_handler, 'useAlphaFromAlbedoTexture', tex.hasAlpha)
+            finally:
+                tex.hasAlpha = saved_alpha
 
         # source ambientOcclusion node
         if AMBIENT_TEX in self.textures and not self.isPBR:

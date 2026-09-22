@@ -35,6 +35,32 @@ def output_name(value, extension):
     return value
 
 
+def lightmap_output_name(value):
+    """KaDshow strips every lightmap_ token; keep one token in the marker only."""
+    value = output_name(value, '.ktx2')
+    stem = Path(value).stem.replace('lightmap_', '')
+    if not stem:
+        raise ValueError('Lightmap output needs a nonempty stem without lightmap_')
+    return stem + '.ktx2'
+
+
+def encode_rgbd(rgb):
+    """rgbd-v1: Babylon 7.27 default gamma2.2 RGBD in RGBA8 UNORM."""
+    import numpy as np
+    rgb = np.asarray(rgb, dtype=np.float32)
+    if not np.isfinite(rgb).all() or np.any(rgb < 0) or np.any(rgb > 255):
+        raise ValueError('RGBD requires finite nonnegative linear RGB in [0,255]; source is not clipped')
+    peak = np.maximum(rgb.max(axis=-1), 1e-7)
+    divisor = np.minimum(np.floor(np.maximum(255.0 / peak, 1.0)), 255.0) / 255.0
+    encoded = np.concatenate((np.power(np.clip(rgb * divisor[..., None], 0, 1), 1 / 2.2), divisor[..., None]), axis=-1)
+    pixels = np.rint(encoded * 255).astype(np.uint8)
+    restored = np.power(pixels[..., :3].astype(np.float32) / 255, 2.2) / (pixels[..., 3:4].astype(np.float32) / 255)
+    error = np.abs(restored - rgb)
+    return pixels, dict(linear_min=float(rgb.min()), linear_max=float(rgb.max()),
+        alpha_min=int(pixels[..., 3].min()), alpha_max=int(pixels[..., 3].max()),
+        rgbd_quantization_mae=float(error.mean()), rgbd_quantization_max_error=float(error.max()))
+
+
 def texture_fields(node, location='$'):
     """Yield semantic texture reference fields, not arbitrary matching strings.
 
@@ -89,7 +115,8 @@ def load_plan(config_path):
         claimed.add(name.casefold())
     for original in textures:
         spec = dict(original)
-        spec['output'] = output_name(spec['output'], '.ktx2')
+        spec['output'] = (lightmap_output_name(spec['output']) if spec.get('lightmap_markers')
+                          else output_name(spec['output'], '.ktx2'))
         claim(spec['output'])
         source = (root / spec['source']).resolve()
         if not source.is_file():
@@ -105,6 +132,14 @@ def load_plan(config_path):
         spec.setdefault('alpha', 'preserve')
         if spec['alpha'] not in ('preserve', 'opaque', 'discard'):
             raise ValueError('alpha must be preserve, opaque or discard')
+        spec.setdefault('encoding', 'legacy')
+        if spec['encoding'] not in ('legacy', 'rgbd-v1'):
+            raise ValueError('Unsupported lightmap encoding: ' + str(spec['encoding']))
+        if spec['encoding'] == 'rgbd-v1':
+            if (not spec.get('lightmap_markers') or spec.get('references') or
+                source.suffix.lower() not in ('.exr', '.hdr') or spec['color_space'] != 'linear' or
+                spec['alpha'] != 'preserve' or spec['mipmaps'] or spec['codec'] != 'uastc'):
+                raise ValueError('RGBD requires a marker lightmap, HDR/EXR source, RGBA linear UNORM, UASTC and no mipmaps')
         spec['source_path'] = str(source)
         specs.append(spec)
         for field, mapping in [('references', refs), ('lightmap_markers', markers)]:
@@ -153,6 +188,16 @@ def load_plan(config_path):
                 if name_before in markers:
                     spec = markers[name_before]
                     node['name'] = 'lightmap_' + Path(spec['output']).stem
+                    metadata = node.get('metadata') or {}
+                    if not isinstance(metadata, dict):
+                        raise ValueError('Lightmap marker metadata must be an object')
+                    if spec['encoding'] == 'rgbd-v1':
+                        metadata['kadshowLightmapEncoding'] = 'rgbd-v1'
+                        node['metadata'] = metadata
+                    elif 'kadshowLightmapEncoding' in metadata:
+                        del metadata['kadshowLightmapEncoding']
+                        metadata.pop('kadshowLightmapMinDivisor', None)
+                        node['metadata'] = metadata
                     marker_hits.add(name_before)
                     changes.append(dict(model=name, location=f'$.{collection}[{index}].name',
                                         before=name_before, after=node['name']))
@@ -185,18 +230,22 @@ def prepare(spec, directory):
             raise ValueError(f'Non-finite RGB values: {source}')
         metrics = dict(linear_min=float(rgb.min()), linear_max=float(rgb.max()),
                        pixels_above_one_percent=float(np.mean(np.any(rgb > 1, axis=2)) * 100))
-        rgb = np.clip(rgb, 0, 1)
-        if spec['color_space'] == 'srgb':
-            rgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1 / 2.4) - 0.055)
-        pixels = np.rint(np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-        if raw.shape[2] == 4 and spec['alpha'] != 'discard':
-            alpha = raw[:, :, 3]
-            if not np.isfinite(alpha).all():
-                raise ValueError(f'Non-finite alpha: {source}')
-            if spec['alpha'] == 'opaque' and not np.all(alpha == 1):
-                raise ValueError(f'Non-opaque source: {source}')
-            if spec['alpha'] == 'preserve':
-                pixels = np.dstack((pixels, np.rint(np.clip(alpha, 0, 1) * 255).astype(np.uint8)))
+        if spec.get('encoding') == 'rgbd-v1':
+            pixels, rgbd_metrics = encode_rgbd(rgb)
+            metrics.update(rgbd_metrics)
+        else:
+            rgb = np.clip(rgb, 0, 1)
+            if spec['color_space'] == 'srgb':
+                rgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1 / 2.4) - 0.055)
+            pixels = np.rint(np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+            if raw.shape[2] == 4 and spec['alpha'] != 'discard':
+                alpha = raw[:, :, 3]
+                if not np.isfinite(alpha).all():
+                    raise ValueError(f'Non-finite alpha: {source}')
+                if spec['alpha'] == 'opaque' and not np.all(alpha == 1):
+                    raise ValueError(f'Non-opaque source: {source}')
+                if spec['alpha'] == 'preserve':
+                    pixels = np.dstack((pixels, np.rint(np.clip(alpha, 0, 1) * 255).astype(np.uint8)))
         image = Image.fromarray(pixels)
     else:
         with Image.open(source) as original:
@@ -250,6 +299,18 @@ def commit_delivery(files, destination, run):
         raise
 
 
+def apply_rgbd_bounds(model, textures):
+    """Keep compressed alpha from decoding beyond the source encoding range."""
+    for texture in textures:
+        if texture.get('encoding') != 'rgbd-v1':
+            continue
+        marker_name = 'lightmap_' + Path(texture['output']).stem
+        for collection in ('meshes', 'transformNodes'):
+            for node in model.get(collection, []):
+                if node.get('name') == marker_name:
+                    node['metadata']['kadshowLightmapMinDivisor'] = texture['alpha_min'] / 255.0
+
+
 def run_conversion(plan, ktx, threads, prepare_image=None):
     root = Path(plan['root'])
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
@@ -289,6 +350,10 @@ def run_conversion(plan, ktx, threads, prepare_image=None):
             report['textures'].append(dict(**spec, **metrics, output_bytes=output.stat().st_size, output_sha256=sha(output)))
             save()
         for model in plan['models']:
+            # Lossy GPU formats can undershoot the smallest valid alpha divisor.
+            # Record the pre-compression bound, so clients cannot amplify that error
+            # beyond the source encoding's representable range.
+            apply_rgbd_bounds(model['data'], report['textures'])
             (staging / model['output']).write_text(json.dumps(model['data'], ensure_ascii=False, separators=(',', ':')), encoding='utf8')
             if sha(Path(model['source'])) != model['source_sha256']:
                 raise RuntimeError('Source model changed during conversion')

@@ -1,6 +1,6 @@
 {
   "name": "Blender_JSON_Exporter",
-  "version": "3.3.7",
+  "version": "3.3.8",
   "description": "Writes .babylon file from Blender file",
   "main": "",
   "repository": {

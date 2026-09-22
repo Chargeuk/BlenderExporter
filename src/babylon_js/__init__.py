@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 7),
+    'version': (3, 3, 8),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -111,6 +111,10 @@ class JsonMain(bpy.types.Operator, ExportHelper):
     ktx_lightmap: bpy.props.StringProperty(
         name='KaDshow lightmap image', subtype='FILE_PATH', default='',
         description='Optional source PNG/EXR for a lightmap_ parent; UASTC, sRGB PNG baseline, no mipmaps')
+    ktx_lightmap_encoding: bpy.props.EnumProperty(
+        name='KaDshow lightmap encoding', default='legacy',
+        items=(('legacy', 'Legacy LDR', 'Existing lightmap format; values above one are clipped'),
+               ('rgbd-v1', 'RGBD HDR (requires updated KaDshow)', 'Preserve HDR lighting in RGBA; opt-in metadata and UASTC')))
     ktx_lightmap_marker: bpy.props.StringProperty(
         name='Lightmap marker', default='',
         description='Exact exported lightmap_ node name; empty selects the only marker in the export')
@@ -176,7 +180,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             options = dict(executable=self.ktx_executable, flip_y=self.ktx_flip_y,
                            codec=self.ktx_codec, threads=self.ktx_threads,
                            lightmap=self.ktx_lightmap, lightmap_marker=self.ktx_lightmap_marker,
-                           auto_lightmap=self.ktx_auto_lightmap,
+                           auto_lightmap=self.ktx_auto_lightmap, lightmap_encoding=self.ktx_lightmap_encoding,
                            convert_materials=self.convert_to_ktx2)
             if self.export_skybox:
                 options['skybox'] = dict(executable=self.basis_executable, image=self.skybox_image,
@@ -232,6 +236,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             options.prop(self, 'ktx_auto_lightmap')
             options.prop(self, 'ktx_lightmap')
             options.prop(self, 'ktx_lightmap_marker')
+            options.prop(self, 'ktx_lightmap_encoding')
             if self.ktx_auto_lightmap and not self.ktx_lightmap:
                 from .ktx_export import infer_lightmap
                 objects = context.selected_objects if self.export_selected else context.scene.objects

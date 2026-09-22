@@ -31,7 +31,10 @@ async function main(){
    console.log('Parsed room; loading lightmap');
    const lm=meshes.find(m=>m.name.startsWith('lightmap_'));
    if(!lm)throw Error('No KaDshow lightmap marker');
-   const lightmap=await new Promise((resolve,reject)=>{const t=new B.Texture('/assets/'+encodeURIComponent(lm.name.slice(9))+'.ktx2',scene,undefined,undefined,undefined,()=>resolve(t),(m,e)=>reject(Error(m)));setTimeout(()=>reject(Error('Lightmap timeout')),60000);});
+   const encoding=getLightmapEncoding(lm.metadata);
+   const lightmap=await new Promise((resolve,reject)=>{const t=new B.Texture('/assets/'+encodeURIComponent(extractLightmapName(lm))+'.ktx2',scene,undefined,undefined,undefined,()=>resolve(t),(m,e)=>reject(Error(m)));setTimeout(()=>reject(Error('Lightmap timeout')),60000);});
+   configureLightmapEncoding(lightmap,encoding,lm.metadata);
+   if(encoding==='rgbd-v1'&&lightmap.getInternalTexture()._useSRGBBuffer)throw Error('RGBD must use UNORM without hardware sRGB decode');
    lightmap.coordinatesIndex=1;
    const clones=new Map();
    for(const mesh of lm.getChildMeshes())if(mesh.material){
@@ -39,6 +42,7 @@ async function main(){
     if(!clones.has(old)){
      const m=old.clone(old.name+' app lightmap');const plugin=new PbrLightmapMaterialPlugin(m);
      plugin.pbrLightmapTexture=lightmap;m.lightmapTexture=null;plugin.isEnabled=true;
+     if(!m.transparencyMode)m.transparencyMode=0;
      if(m.metallicTexture)m.metallicTexture.gammaSpace=false;clones.set(old,m);
     }mesh.material=clones.get(old);
    }
@@ -57,7 +61,8 @@ async function main(){
    window.review={scene,engine,camera,meshes,sky,env,lightmap,lm};
    return {status:'passed',babylon:B.Engine.Version,webgl:engine.webGLVersion,renderer:engine.getGlInfo(),importedNodes:meshes.length,lights:lights.length,
     visibleTriangles:lm.getChildMeshes().reduce((n,m)=>n+m.getTotalIndices()/3,0),textures,materialPlugin:'actual extracted PbrLightmapMaterialPlugin',
-    runtimeMaterials:[...clones.values()].map(m=>({name:m.name,metallic:m.metallic,roughness:m.roughness,backFaceCulling:m.backFaceCulling})),
+    lightmapEncoding:encoding,lightmapHardwareSrgb:lightmap.getInternalTexture()._useSRGBBuffer,
+    runtimeMaterials:[...clones.values()].map(m=>({name:m.name,metallic:m.metallic,roughness:m.roughness,backFaceCulling:m.backFaceCulling,transparencyMode:m.transparencyMode,alphaBlending:m.needAlphaBlending()})),
     limits:'WebGL harness with actual app parser/plugin; React lifecycle and physics worker not exercised'};
   });
   await page.locator('canvas').screenshot({path:path.join(output,'room-arrival.png')});
