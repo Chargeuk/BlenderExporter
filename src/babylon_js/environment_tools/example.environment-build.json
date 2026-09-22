@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "blend": "environment.blend",
+  "quality": "final",
+  "size": 2048,
+  "samples": {
+    "DIRECT": 128,
+    "INDIRECT": 2048
+  },
+  "device": "CPU",
+  "uv": "SimpleBake",
+  "diffuse_bounces": 8,
+  "total_bounces": 12,
+  "metallic_cap": 0.8,
+  "preview_material": "KaDshow Split Lighting PREVIEW",
+  "receivers": {
+    "property": "role",
+    "values": [
+      "VISIBLE_DELIVERY_AND_BAKE_RECEIVER"
+    ]
+  },
+  "contributors": {
+    "property": "role",
+    "values": [
+      "BAKE_ONLY_CONTRIBUTOR"
+    ]
+  },
+  "glass": {
+    "property": "role",
+    "values": [
+      "VISIBLE_DELIVERY_NO_BAKE"
+    ]
+  },
+  "metal_receivers": {
+    "names": []
+  },
+  "bake_lights": {
+    "names": []
+  },
+  "images": {
+    "colour": "textures/atlases/colour.png",
+    "direct": "textures/lightmaps/direct_final.exr",
+    "indirect": "textures/lightmaps/indirect_final.exr",
+    "island_ids": "textures/lightmaps/island_ids.exr",
+    "combined": "textures/lightmaps/lightmap.exr"
+  },
+  "source_images": [
+    "textures/atlases/colour.png",
+    "textures/atlases/roughness_metallic.png"
+  ],
+  "downloads": [
+    {
+      "path": "textures/hdri/limpopo_golf_course_4k.exr",
+      "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/exr/4k/limpopo_golf_course_4k.exr",
+      "sha256": "bd8605f335c2632ca7f9c2393e656f9ffd840bbfeab1b00137eae02a8fa7827f"
+    }
+  ],
+  "capture": {
+    "mode": "baked",
+    "world_output": "Lighting",
+    "position": [
+      -0.4,
+      -0.6,
+      1.6
+    ],
+    "size": 4096,
+    "samples": 32
+  },
+  "thumbnail": {
+    "mode": "baked",
+    "world_output": "Visible Sky",
+    "position": [
+      -3.15,
+      -2.85,
+      1.8
+    ],
+    "target": [
+      0.6,
+      1.05,
+      1.45
+    ],
+    "size": 512,
+    "samples": 64,
+    "lens": 24
+  },
+  "combined_provenance": "provenance/combined.provenance.json"
+}

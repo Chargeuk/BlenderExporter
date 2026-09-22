@@ -10,4 +10,4 @@ Python staged export: `ktx_options={..., 'lightmap_size': 1024}`. Standalone con
 
 ## Accepted example
 
-On 2026-09-22 the user confirmed that the 1024-square RGBD map for grandBedroomDayRealisticV3 looks fine in KaDshow. Its UASTC file is 895,762 bytes versus 3,348,649 bytes for the earlier 2048 map. Keep Original as the generic default: acceptable resolution depends on the environment and UV allocation.
+On 2026-09-22 the user confirmed that the 1024-square RGBD map for grandBedroomDay looks fine in KaDshow. Its UASTC file is 895,762 bytes versus 3,348,649 bytes for the earlier 2048 map. Keep Original as the generic default: acceptable resolution depends on the environment and UV allocation.

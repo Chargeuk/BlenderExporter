@@ -20,10 +20,10 @@ The PBR export multiplier defaults are now metallic **1.0**, roughness **0.8**. 
 
 ## Shader controls
 
-- Baked and reflection strength: 0â€“4.
-- Shadow suppression: 0â€“8; 0 disables suppression, 1 is the base curve, higher values darken more.
-- Fully lit threshold: 0.01â€“8, in decoded linear lightmap luminance. Above this threshold reflections are not suppressed. Raising it includes more areas in suppression.
-- Highlight preservation: 0â€“1; preserves a limited fraction of bright reflections, with modest metallic dependence.
+- Baked and reflection strength: 0–4.
+- Shadow suppression: 0–8; 0 disables suppression, 1 is the base curve, higher values darken more.
+- Fully lit threshold: 0.01–8, in decoded linear lightmap luminance. Above this threshold reflections are not suppressed. Raising it includes more areas in suppression.
+- Highlight preservation: 0–1; preserves a limited fraction of bright reflections, with modest metallic dependence.
 - Reflection suppression is capped at a multiplier of 1. HDR lightmaps do not amplify environment reflections above their normal PBR result.
 
 The client rejects unknown profile versions/modes and invalid finite ranges, warns and uses Original for that marker rather than breaking loading. Missing numeric fields in a valid v1 profile use the v1 defaults. The exporter validates before writing and rejects invalid settings.
@@ -48,7 +48,7 @@ KADSHOW_CLIENT_START_IMAGE=kadshow-client:lighting-debug npm run start:summary:c
 
 Real Blender tests: `tests/test_lighting_export.py` covers direct/staged exports, defaults, operator overrides, Original selection, metadata preservation and invalid-input rejection. `tests/test_material_export.py` checks source preservation and packed/scalar material multipliers. Client tests cover schema, unmarked/RGBD-only legacy fallback, isolated overrides, reset and plugin lifecycle. Actual-code WebGL evidence is in `C:/Users/d_a_s/Documents/Codex/2026-09-15/do-x20/lighting-comparison/scoped-debug01` and `scoped-production01`.
 
-The accepted bedroom delivery `H:/code/kadshowWeb/content/environments/grandBedroomDayRealisticV3/rgbd-test/grandBedroomDay.babylon` was updated with this profile and the 1.0/0.8 material values. Its old model and a change report are under `blender/appearanceCorrections/lightingProfile_20260922_104114`. Geometry, UVs and all companion files are unchanged. Upload the updated model; reuse its existing KTX2, Basis, ENV and thumbnail files.
+The current compact reference is `content/environments/grandBedroomDay`; its Blender README and accepted-result record identify the saved source, accepted maps and runtime files. Use current file identities rather than an earlier export experiment.
 
 
 ## Saved Blender lighting-node defaults (3.3.10)

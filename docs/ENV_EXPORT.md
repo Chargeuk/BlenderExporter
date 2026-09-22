@@ -52,6 +52,6 @@ Evidence is under `.bjs-ktx/<model>/<timestamp>/environment`, with summary in `<
 
 - `tests/test_environment_blender.py`: actual converter, HDR range/boost, defaults, explicit association, missing helper, marker ID collision, source preservation and failed conversion preserving old delivery.
 - `tests/extract_kadshow_browser.mjs` and `tests/validate_kadshow_browser.cjs`: current application parser and PBR-lightmap plugin, actual WebGL texture decode and probe rendering. This is not the full React/physics lifecycle.
-- Bedroom: `grandBedroomDayRealisticV3/blender/hdrEnvironment/REPORT.md` records exact source/capture/settings and remaining in-app acceptance. A harness showed black room regions and an existing material-plugin uniform warning; the user requested deferring that investigation to their KaDshow test. Do not label room visual acceptance complete.
+- Current bedroom: `content/environments/grandBedroomDay/blender/README.md` and `ACCEPTED_RESULT.json` identify the accepted source/package and verification limits. Use its enhanced-World baked-appearance capture contract; earlier diagnostic renders are not current delivery instructions.
 
 Reference implementation: [Babylon environment texture tools, 7.27](https://github.com/BabylonJS/Babylon.js/blob/7.27.0/packages/dev/core/src/Misc/environmentTextureTools.ts), [PBR documentation](https://doc.babylonjs.com/features/featuresDeepDive/materials/using/masterPBR/), [IBL tool](https://www.babylonjs.com/tools/ibl/).

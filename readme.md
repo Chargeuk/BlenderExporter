@@ -2,6 +2,8 @@
 
 ## Chargeuk fork: Blender 5.2, KTX2 and Basis skybox export
 
+Version 3.3.14 adds [saved-scene preparation](docs/ENVIRONMENT_PREPARATION.md): role-based Cycles baking, preserved UV ownership, isolated processing, native lighting combination, verified capture freshness, thumbnails and resumable restoration. Its [preview initializer](docs/LIGHTING_CONTROLS.md) creates the standard adjustable graph; disk-image replacement handles packed and nested samplers.
+
 Version3.3.13 packages the [shared lightmap processor](docs/LIGHTMAP_PROCESSING.md), with an independent CLI and dependency checks. Environment projects keep their settings and recipes, not script copies.
 
 Version3.3.12 adds native [World environment controls](docs/ENVIRONMENT_CONTROLS.md): one original HDRI, separate lighting/visible-sky brightness, and temporary skybox preparation.
@@ -11,7 +13,7 @@ Version3.3.11 adds a persistent [Export Tangents switch](docs/GEOMETRY_EXPORT.md
 Version3.3.10 adds [lightmap export sizes](docs/LIGHTMAP_RESOLUTION.md) and [saved lighting-node dialog defaults](docs/LIGHTING_PROFILE.md). Current PBR defaults are metallic1.0 / roughness0.8.
 
 
-Version3.3.7 defaults PBR export multipliers to **metallic0.5 / roughness0.4**, matching the user's KaDshow comparison. Both are editable and preserve Blender source materials. See [material controls and tests](docs/MATERIAL_EXPORT.md).
+PBR export defaults are metallic **1.0** / roughness **0.8**. Editable multipliers preserve Blender source materials; see [material controls and tests](docs/MATERIAL_EXPORT.md).
 
 Version 3.3.6 adds optional **Export KaDshow environment lighting**: a saved room EXR/HDR becomes a validated `environment.env`, with selectable face size defaulting to **512**, exposure/highlight controls and a delivery-only `hasenv` marker. See [ENV setup, capture contract and tests](docs/ENV_EXPORT.md). The local converter requires Node.js, the pinned Babylon helper and Chromium; it does not start a Blender render.
 
@@ -24,7 +26,7 @@ The fork has been tested with Blender 5.2.2 LTS on a static KaDshow environment.
 ## Documentation
 See the [exporters documentation](https://doc.babylonjs.com/extensions/Exporters) to:
 
-- know [how to install](https://doc.babylonjs.com/extensions/Exporters/Blender) 
+- know [how to install](https://doc.babylonjs.com/extensions/Exporters/Blender)
 - learn the [features](https://doc.babylonjs.com/extensions/Exporters/Blender#installation)
 - read some [tips](https://doc.babylonjs.com/extensions/Exporters/Blender_Tips)
 
