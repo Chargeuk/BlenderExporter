@@ -140,7 +140,7 @@ uses the saved colour Ã— adjusted-lighting preview and excludes analytic ligh
 glass and contributors. Physical captures need appropriate render sampling and
 separate visual assessment. Select `world_output: Lighting` for enhanced lighting
 or `Visible Sky` for its separately controlled brightness. Thumbnail glass is
-included. Do not confuse the indoor capture with the outdoor skybox.
+included. Do not confuse the scene lighting capture with the outdoor skybox.
 
 For optional physical-panorama denoising, the plugin also carries
 `denoise_panorama.py`. Run factory-startup background Blender with `--python` and
@@ -157,7 +157,7 @@ seam and thumbnail framing before copying approved results into source textures.
 Restoration is not a promise of byte-identical Cycles results across versions or
 hardware. Preserve accepted originals until the replacement has been reviewed.
 
-The four lightmap masters live in `masters/`; room capture is `capture/capture.exr`
+The four lightmap masters live in `masters/`; scene lighting capture is `capture/capture.exr`
 and thumbnail is `thumbnail/thumbnail.jpg`. Promote `masters/combined.exr` under
 the environment's configured final lightmap filename. Update the lightmap marker
 and World `bjs_environment_image` when paths change. Runtime RGBD/KTX2, Basis and
@@ -188,3 +188,11 @@ packed-only or unsaved preview image cannot establish external-file provenance.
 The runner preserves original island IDs during reuse even if scene enumeration
 changes; actual object/chart UV triangles must still match exactly. It never
 reconstructs original ownership from the fully dilated ID image.
+
+## Supported surface scope
+
+Baked capture assigns one `preview_material` to every receiver slot and uses one UV1 colour atlas. Physical source materials may differ, but extra colour atlases, independent visible emission and alpha-cutout foliage are not automatically preserved. Specify and validate a representative preparation/capture/export route before extending beyond this scope. Glass follows its explicit separate role. A material budget exception does not make the common preview support that surface.
+
+Managed initializer graphs have a source-resolution guard (see the lighting-controls manual). After replacing all source lighting/ID images at a new size, explicitly refresh offsets with `update_preview_resolution`, update config and save before running. Preflight reports custom graphs as unverified; inspect their offsets manually. Runtime-only resizing does not change source offsets.
+
+For lighting variants, use separate saved scenes/configurations, map paths, provenance and runtime destinations; share only explicitly unchanged source assets. Shared geometry/UV/material edits require revalidating every affected variant. For open or mixed spaces use a representative clear capture point and review the sky/ground/enclosure balance; this remains a scene capture, not a substitution of the source HDRI.

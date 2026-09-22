@@ -68,3 +68,11 @@ lighting correspondence separately. Physical-PBR capture does not use this guard
 25-sampler packed-image replacement, same-island isolation, smoothing bypasses,
 runtime metadata independence and stale-combination rejection. Run with
 `blender --background --factory-startup --python-exit-code 1 --python TEST -- NEW_OUTPUT`.
+
+## Source dimensions and smoothing offsets
+
+Initializer graphs carry source dimensions, sampler roles and all 24 pixel-offset coordinates. `validate_preview_resolution(material, (width, height))` rejects changed dimensions, stale offset constants and incomplete managed samplers. Preparation preflight, combination and baked capture call this guard; output texture resizing does not.
+
+To move from a pilot to final source resolution, replace all direct/indirect/ownership images with matching dimensions (or correctly sized placeholders before the new bake), then call `update_preview_resolution(material)`, update the configuration source size and save. The helper refreshes only UV offset constants and preserves control values; it validates all managed groups before mutating them. Recombine before capture. Never scale ownership IDs from an unrelated layout.
+
+Custom/untagged graphs return `unverified_custom_graph` and need manual source-offset verification when changing resolution. The helper refuses automatic migration. This compatibility path is not a managed-graph pass. Delivery-only downsizing requires neither an offset update nor a physical rebake.

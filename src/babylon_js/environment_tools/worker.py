@@ -10,6 +10,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent.parent))
 from common import load_config, sha, save_json
 from babylon_js import environment_controls as world_tools
+from babylon_js.lighting_controls import validate_preview_resolution
 from image_binding import replace_from_disk
 from appearance import preview_identity, verify_combination
 
@@ -27,6 +28,13 @@ def select(c, name):
 
 
 def binding(c, name): return (Path(c['_root']) / c['images'][name]).resolve()
+
+
+def check_preview_resolution(c):
+    result=validate_preview_resolution(bpy.data.materials[c['preview_material']],(c['size'],c['size']))
+    if result['status']=='unverified_custom_graph':
+        print('Custom preview: source-pixel smoothing offsets need manual validation before changing source resolution')
+    return result
 
 
 def relink(c, root):
@@ -122,10 +130,11 @@ def preflight(c):
     if not output.inputs['Surface'].links or output.inputs['Surface'].links[0].from_socket!=node.outputs['Lighting']:
         raise ValueError('Physical baking requires the World Lighting output')
     if c.get('preview_material') not in bpy.data.materials:raise ValueError('Missing configured preview material')
+    resolution=check_preview_resolution(c)
     return {'receiver_count':len(receivers),'triangles':triangles,'receivers':[o.name for o in receivers],
         'contributors':[o.name for o in contributors],'excluded_glass':[o.name for o in select(c,'glass')],
         'world_controls':world_tools.settings(node),'missing_source_images':missing,'blender_version':bpy.app.version_string,
-        'samples':c['samples'],'quality':c.get('quality','final')}
+        'samples':c['samples'],'quality':c.get('quality','final'),'preview_resolution':resolution}
 
 
 def evaluate_receivers(c):
@@ -230,6 +239,7 @@ def clone_tree(tree):
 
 
 def flatten(c,root,stage):
+    check_preview_resolution(c)
     s=setup(c);original=bpy.data.materials[c['preview_material']];mat=original.copy()
     save_json(stage/'appearance.json',{'schema_version':1,'preview_sha256':preview_identity(original)})
     for n in mat.node_tree.nodes:
@@ -280,6 +290,7 @@ def capture(c,root,stage,thumbnail=False):
     mode=spec.get('mode','baked')
     if mode not in ('baked','physical'):raise ValueError('Capture mode must be baked or physical')
     if mode=='baked':
+        check_preview_resolution(c)
         verify_combination(bpy.data.materials[c['preview_material']],root/'masters/combined.exr',root/'masters/combined.provenance.json')
     visible=receivers+(glass if thumbnail else [])
     if mode=='physical':visible+=select(c,'contributors')

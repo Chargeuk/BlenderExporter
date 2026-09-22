@@ -122,3 +122,15 @@ differs from a fresh sorted extraction; saved IDs are preserved rather than
 renumbered. The source scene, source textures and eight runtime assets remained
 unchanged. The environment now retains compressed original ownership and a
 hash-based accepted-result record; this does not claim new visual acceptance.
+
+## Source-resolution guard
+
+`tests/test_preview_resolution.py` exercises a 32-to-64 source resize in native
+Blender. Stale pixel offsets, inconsistent lighting/ownership dimensions and a
+different configured source size are rejected. Failed updates preserve offset
+values. After refreshing all 24 offsets, the graph's shader output matches a new
+64-pixel initializer graph exactly (maximum decoded-pixel difference zero), with
+all saved artistic/runtime controls retained. Colour-atlas dimensions remain
+independent. Validation survives saving/reopening. Untagged custom graphs report
+unverified status and refuse automatic migration. These are preparation checks,
+not a new bake or visual acceptance of an existing environment.
