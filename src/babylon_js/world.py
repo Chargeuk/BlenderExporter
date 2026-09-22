@@ -53,7 +53,11 @@ class World:
         if self.skyBox or world.usePBRMaterials:
             if self.envTexture == USE_BLENDER_FOR_ENV:
                 self.environmentTextureSize = world.environmentTextureSize
-                if world.use_nodes:
+                from .environment_controls import find_controls
+                managed = find_controls(world)
+                if managed:
+                    Logger.log('KaDshow World controls: use Basis skybox / saved room ENV export; raw outdoor HDR is not a room environment', 2)
+                if world.use_nodes and not managed:
                     worldNode = AbstractBJSNode.readWorldNodeTree(world.node_tree)
                     if worldNode is not None and ENVIRON_TEX in worldNode.bjsTextures:
                         bjsTexture = worldNode.bjsTextures[ENVIRON_TEX]
@@ -142,6 +146,13 @@ bpy.types.World.fogDensity = bpy.props.FloatProperty(
     name='Density',
     description='How dense the fog should be',
     default = 0.3, min = 0, max = 1.0
+)
+
+###     Geometry     ###
+bpy.types.World.exportTangents = bpy.props.BoolProperty(
+    name='Export Tangents',
+    description='Include tangent vectors when available. Disable for smaller files when materials do not need an explicit tangent basis',
+    default=True,
 )
 
 ###     Max Decimal Precision     ###
@@ -262,6 +273,9 @@ class BJS_PT_WorldPanel(bpy.types.Panel):
 
         world = context.world
 
+        from .environment_controls import draw_controls
+        draw_controls(layout, world)
+
         box = layout.box()
         box.label(text='Sky Box / Environment Texture:')
         box.prop(world, 'evtTexture')
@@ -280,6 +294,10 @@ class BJS_PT_WorldPanel(bpy.types.Panel):
         row = box.row()
         row.prop(world, 'fogMode')
         row.prop(world, 'fogDensity')
+
+        box = layout.box()
+        box.label(text='Geometry:')
+        box.prop(world, 'exportTangents')
 
         box = layout.box()
         box.label(text='Max Decimal Precision:')

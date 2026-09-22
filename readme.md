@@ -2,6 +2,12 @@
 
 ## Chargeuk fork: Blender 5.2, KTX2 and Basis skybox export
 
+Version3.3.13 packages the [shared lightmap processor](docs/LIGHTMAP_PROCESSING.md), with an independent CLI and dependency checks. Environment projects keep their settings and recipes, not script copies.
+
+Version3.3.12 adds native [World environment controls](docs/ENVIRONMENT_CONTROLS.md): one original HDRI, separate lighting/visible-sky brightness, and temporary skybox preparation.
+
+Version3.3.11 adds a persistent [Export Tangents switch](docs/GEOMETRY_EXPORT.md). Disable it for KaDshow environments to reduce file size and keep merge-compatible vertex layouts.
+
 Version3.3.10 adds [lightmap export sizes](docs/LIGHTMAP_RESOLUTION.md) and [saved lighting-node dialog defaults](docs/LIGHTING_PROFILE.md). Current PBR defaults are metallic1.0 / roughness0.8.
 
 

@@ -57,6 +57,11 @@ def world_panorama(context):
     """
     import bpy
     world = context.scene.world
+    from .environment_controls import find_controls, source_image
+    managed = find_controls(world)
+    if managed:
+        image = source_image(managed)
+        return bpy.path.abspath(image.filepath, library=image.library)
     if not world or not world.use_nodes:
         return ''
     pending = [n for n in world.node_tree.nodes if n.type == 'OUTPUT_WORLD' and n.is_active_output]
@@ -202,10 +207,12 @@ def set_marker(model):
 
 def export_skybox(context, model, work, package, options):
     import bpy
+    from .environment_controls import find_controls, visible_panorama
     tool, version = find_basisu(options.get('executable', ''))
     if not tool:
         raise ValueError(version)
-    path = options.get('image') or world_panorama(context)
+    managed = options.get('world_controls', True) and find_controls(context.scene.world)
+    path = world_panorama(context) if managed else options.get('image') or world_panorama(context)
     if not path:
         raise ValueError('Select a saved skybox panorama; no unique connected World image was found')
     source = Path(bpy.path.abspath(path)).resolve()
@@ -213,9 +220,21 @@ def export_skybox(context, model, work, package, options):
         raise ValueError('Skybox source does not exist: ' + str(source))
     marker_change = set_marker(model)
     directory = work / 'skybox'
-    faces, report = prepare_faces(source, directory / 'faces', int(options.get('size', 1024)),
-                                  float(options.get('rotation', 180)), float(options.get('exposure', 0)),
-                                  options.get('tone_map', 'REINHARD'))
+    if managed:
+        from .environment_controls import settings
+        source = Path(settings(managed)['image']).resolve()
+        original_hash = core.sha(source)
+        with visible_panorama(context, directory) as (temporary, values):
+            faces, report = prepare_faces(temporary, directory / 'faces', int(options.get('size', 1024)),
+                360 + float(options.get('world_rotation_offset', 0)), float(options.get('exposure', 0)),
+                options.get('tone_map', 'REINHARD'))
+            report.update(evaluated_panorama_sha256=report['source_sha256'],
+                          source=str(source), source_sha256=original_hash,
+                          world_controls=values, temporary_panorama_removed=True)
+    else:
+        faces, report = prepare_faces(source, directory / 'faces', int(options.get('size', 1024)),
+                                      float(options.get('rotation', 180)), float(options.get('exposure', 0)),
+                                      options.get('tone_map', 'REINHARD'))
     output = directory / 'cubemap.basis'
     threads = int(options.get('threads', 8))
     quality = int(options.get('quality', 255))

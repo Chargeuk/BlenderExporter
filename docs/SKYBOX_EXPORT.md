@@ -75,3 +75,8 @@ The existing `JsonExporter.execute(..., ktx_options=...)` staging API also accep
 These tests validate projection and package data. They do not establish full visual acceptance in the running KaDshow application, alignment with arbitrary Blender World graphs, or bit-identical compression to historical PVRTexTool files. Review orientation, horizon, seams and exposure in the target scene before accepting a new skybox.
 
 Reference UI convention: [original panorama converter](https://jaxry.github.io/panorama-to-cubemap/). Encoder: [Basis Universal](https://github.com/BinomialLLC/basis_universal). The projection implementation is independent; no website code or browser runtime is bundled.
+
+
+### Native World controls (3.3.12)
+
+One original HDRI can drive enhanced lighting and an independently controlled visible sky. See [Environment Controls](ENVIRONMENT_CONTROLS.md). Managed skybox export evaluates the Visible Sky output temporarily and preserves World rotation; the manual image-only path remains available.

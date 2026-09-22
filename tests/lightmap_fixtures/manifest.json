@@ -1,0 +1,61 @@
+{
+  "provenance": "Historical bedroom mirrored trial, 2026-09-20. Compact regression fixtures are self-contained beside this manifest; original source-file hashes are historical provenance, not dependencies.",
+  "reference": "OIDN 2.5.0 RT HDR HIGH, inputScale 1, 8-pixel context, default CUDA device on tested host",
+  "fixtures": [
+    {
+      "file": "island_58.npz",
+      "source": "island_58.npz",
+      "source_sha256": "0b7d6f53cc153ea74aa124d69161ce3dab0908ea37e4c26be8cfbc9929001ce6",
+      "shape": [
+        52,
+        148
+      ],
+      "owned_pixels": 4752,
+      "historical_source_sha256": "5182c62c41aa7103501229de6f11aef841b8ca77fb9b38c11b2c1cd282777f6a"
+    },
+    {
+      "file": "island_146.npz",
+      "source": "island_146.npz",
+      "source_sha256": "9b1c637cc501fcc479f2764443655d6e1120136c3cf431dbadfdcd3e39433dc5",
+      "shape": [
+        144,
+        192
+      ],
+      "owned_pixels": 22528,
+      "historical_source_sha256": "ec6a6e1bb8fb8b3a1d6de71f7b12b853b40987ef7e7dc2f3cda64c17863847c2"
+    },
+    {
+      "file": "island_619.npz",
+      "source": "island_619.npz",
+      "source_sha256": "3f575fca50c4f55a61c307c190a466e040d9136e3eeb0d4b5605b542cffa3dfe",
+      "shape": [
+        108,
+        144
+      ],
+      "owned_pixels": 9802,
+      "historical_source_sha256": "adc291db816571bd62417be4bab8b000a6b61f4aa889371c14130cb605949c97"
+    },
+    {
+      "file": "island_674.npz",
+      "source": "island_674.npz",
+      "source_sha256": "1ea1cb30fac6039496d09a4278a486343eedb3c0688cabf28ca0f23aca3eadf2",
+      "shape": [
+        103,
+        144
+      ],
+      "owned_pixels": 9367,
+      "historical_source_sha256": "727934a355956825621f1684ed723071a2fb8edf9906f0f5926b9cfd2944145b"
+    },
+    {
+      "file": "island_2248.npz",
+      "source": "island_2248.npz",
+      "source_sha256": "e41a6bec490f730868b4a668e3b12ecfbdca99d18a88f4af6d30f293edb51cfd",
+      "shape": [
+        40,
+        60
+      ],
+      "owned_pixels": 1034,
+      "historical_source_sha256": "84f08dd6ca8c7e492794842dfa07f55fff5d2b61f435d2bc5bb73349740d9786"
+    }
+  ]
+}

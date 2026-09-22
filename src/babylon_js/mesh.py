@@ -179,7 +179,7 @@ class Mesh(FCurveAnimatable):
         mesh = objectWithModifiers.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
 
         # Triangulate mesh if required
-        hasTangents = Mesh.mesh_triangulate(mesh)
+        hasTangents = Mesh.mesh_triangulate(mesh, scene.world.exportTangents)
 
         # Getting vertices and indices
         self.positions  = []
@@ -511,12 +511,12 @@ class Mesh(FCurveAnimatable):
                     notSorted = True
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     @staticmethod
-    def mesh_triangulate(mesh):
+    def mesh_triangulate(mesh, export_tangents=True):
         # Read Blender's evaluated tessellation without rewriting the mesh.
         # A bmesh round-trip can change custom/weighted corner normals and
         # interpolation on already baked surfaces.
         mesh.calc_loop_triangles()
-        if (mesh.has_custom_normals and len(mesh.uv_layers) and
+        if (export_tangents and mesh.has_custom_normals and len(mesh.uv_layers) and
                 all(len(poly.vertices) <= 4 for poly in mesh.polygons)):
             mesh.calc_tangents(uvmap=mesh.uv_layers[0].name)
             Logger.log('Custom split normals with tangents being used', 2)

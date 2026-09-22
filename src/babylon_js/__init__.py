@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 10),
+    'version': (3, 3, 13),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -42,6 +42,8 @@ if "bpy" in locals():
         importlib.reload(sound)
     if 'world' in locals():
         importlib.reload(world)
+    if 'environment_controls' in locals():
+        importlib.reload(environment_controls)
 
 #===============================================================================
 def update_ktx_defaults(operator, context):
@@ -68,6 +70,8 @@ class BabylonExportPreferences(bpy.types.AddonPreferences):
     def draw(self, context):
         self.layout.prop(self, 'env_converter_script')
         self.layout.label(text='Optional room HDR to ENV converter; see ENV_EXPORT.md')
+        self.layout.label(text='Shared offline lightmap tools: lightmap_tools/cli.py')
+        self.layout.label(text='See lightmap_tools/LIGHTMAP_PROCESSING.md; requires external Python dependencies')
 
 
 class JsonMain(bpy.types.Operator, ExportHelper):
@@ -146,6 +150,12 @@ class JsonMain(bpy.types.Operator, ExportHelper):
     skybox_image: bpy.props.StringProperty(
         name='Skybox panorama', subtype='FILE_PATH', default='',
         description='Saved 2:1 PNG/JPEG/EXR/HDR panorama; empty uses a unique connected World environment image')
+    skybox_world_controls: bpy.props.BoolProperty(
+        name='Use KaDshow World controls', default=True,
+        description='Evaluate the managed group Visible Sky output temporarily, preserving World rotation without bake brightness')
+    skybox_world_rotation_offset: bpy.props.FloatProperty(
+        name='Additional sky rotation', default=0, min=-360, max=360,
+        description='Optional correction after World rotation; normally keep zero')
     skybox_size: bpy.props.EnumProperty(
         name='Skybox face size', default='1024',
         items=[(str(size), str(size) + ' x ' + str(size), 'Pixels per cube face')
@@ -212,6 +222,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                            convert_materials=self.convert_to_ktx2)
             if self.export_skybox:
                 options['skybox'] = dict(executable=self.basis_executable, image=self.skybox_image,
+                    world_controls=self.skybox_world_controls, world_rotation_offset=self.skybox_world_rotation_offset,
                     size=int(self.skybox_size), rotation=self.skybox_rotation, exposure=self.skybox_exposure,
                     tone_map=self.skybox_tone_map, quality=self.skybox_quality, threads=self.skybox_threads)
             if self.export_environment:
@@ -296,14 +307,20 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         row.prop(self, 'export_skybox')
         sky.label(text=status, icon='CHECKMARK' if tool else 'INFO')
         if self.export_skybox:
-            sky.prop(self, 'skybox_image')
+            from .environment_controls import find_controls
+            managed = find_controls(context.scene.world)
+            if managed:
+                sky.prop(self, 'skybox_world_controls')
+            if not (managed and self.skybox_world_controls):
+                sky.prop(self, 'skybox_image')
             sky.prop(self, 'skybox_size')
-            sky.prop(self, 'skybox_rotation')
+            sky.prop(self, 'skybox_world_rotation_offset' if managed and self.skybox_world_controls else 'skybox_rotation')
             sky.prop(self, 'skybox_exposure')
             sky.prop(self, 'skybox_tone_map')
             sky.prop(self, 'skybox_quality')
             sky.prop(self, 'skybox_threads')
-            sky.label(text='Image only: World mapping/strength are not applied', icon='INFO')
+            sky.label(text='World Visible Sky output; temporary panorama only' if managed and self.skybox_world_controls
+                      else 'Image only: World mapping/strength are not applied', icon='INFO')
             if context.scene.world and context.scene.world.inlineTextures:
                 sky.label(text='Disable Inline textures in World settings', icon='ERROR')
         from .env_export import find_converter
@@ -326,10 +343,12 @@ from . import light_shadow
 from . import materials # directory
 from . import world # must be defined before mesh
 from . import mesh
+from . import environment_controls
 classes = (
     # Operator sub-classes
     BabylonExportPreferences,
     JsonMain,
+    environment_controls.BJS_OT_EnvironmentControls,
 
     # Panel sub-classes
     camera.BJS_PT_CameraPanel,
