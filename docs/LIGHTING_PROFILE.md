@@ -8,7 +8,7 @@ New exports carry `metadata.kadshowLighting` on each `lightmap_` node. This surv
   "mode": "shadow-aware",
   "bakedIntensity": 1,
   "reflectionIntensity": 1,
-  "shadowSuppression": 2,
+  "shadowSuppression": 1,
   "fullyLitThreshold": 1,
   "highlightPreservation": 1
 }

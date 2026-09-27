@@ -6,6 +6,8 @@ import babylon_js
 from babylon_js.json_exporter import JsonExporter
 from babylon_js.lighting_profile import DEFAULT_LIGHTING
 babylon_js.register()
+assert DEFAULT_LIGHTING['shadowSuppression']==1
+assert bpy.ops.export.bjs.get_rna_type().properties['lighting_shadow_suppression'].default==1
 out=Path(sys.argv[sys.argv.index('--')+1]);out.mkdir(parents=True,exist_ok=False)
 s=bpy.context.scene;s.world.usePBRMaterials=True;s.world.inlineTextures=False
 marker=bpy.data.objects.new('lightmap_room',None);s.collection.objects.link(marker)

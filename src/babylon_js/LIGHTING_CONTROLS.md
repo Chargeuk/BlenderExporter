@@ -38,12 +38,12 @@ an alternative, first preserve the source and explicitly clear the scene
   renormalizes remaining weights and corrects qualifying dark deviations after
   lift/strength. Patch Size is in pixels. Zero radius bypasses correction.
 - Dark Difference defaults to 0.02, radius to 3; smoothing supports 0–2 including
-  deliberate overdrive. HDR values are not clamped. This is an artistic preview
+  deliberate overdrive. Final RGB is floored at zero; HDR above 1 is preserved. This is an artistic preview
   filter; it can soften actual contact shadows.
 - Colour uses UV1 with Repeat wrapping, lighting/IDs use UV2 with Extend.
   Neighbour and ID samples use Closest; the centre light sample is Linear.
 - Runtime-only Shadow Suppression / Fully Lit Threshold / Highlight Preservation
-  default to 2 / 1 / 1. The group tag and scene association let the exporter read
+  default to 1 / 1 / 1. The group tag and scene association let the exporter read
   these as dialog defaults; they do not affect this Blender preview.
 
 The caller supplies the ownership ID image generated with the matching maps.

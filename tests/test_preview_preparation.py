@@ -19,7 +19,7 @@ def image(name,rgb,colour_space='Linear Rec.709'):
     return im
 colour=image('colour',1.,'sRGB');direct=image('direct',2.);indirect=image('indirect',3.);ids=image('ids',1.,'Non-Color')
 mat,node=create_preview_material(colour,direct,indirect,ids)
-assert scene_lighting_profile(bpy.context)['shadowSuppression']==2
+assert scene_lighting_profile(bpy.context)['shadowSuppression']==1
 try:create_preview_material(colour,direct,indirect,ids);raise AssertionError('overwrote preview')
 except ValueError:pass
 identity=preview_identity(mat)

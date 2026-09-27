@@ -2,7 +2,7 @@
 import math
 
 DEFAULT_LIGHTING = dict(version=1, mode='shadow-aware', bakedIntensity=1.0,
-                       reflectionIntensity=1.0, shadowSuppression=2.0,
+                       reflectionIntensity=1.0, shadowSuppression=1.0,
                        fullyLitThreshold=1.0, highlightPreservation=1.0)
 RANGES = dict(bakedIntensity=(0, 4), reflectionIntensity=(0, 4),
               shadowSuppression=(0, 8), fullyLitThreshold=(.01, 8), highlightPreservation=(0, 1))

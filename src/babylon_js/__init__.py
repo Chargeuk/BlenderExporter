@@ -102,7 +102,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                ('shadow-aware', 'Shadow-aware reflections', 'Use brightness-dependent reflection suppression')))
     lighting_baked_intensity: bpy.props.FloatProperty(name='Baked light strength', default=1, min=0, max=4)
     lighting_reflection_intensity: bpy.props.FloatProperty(name='Reflection strength', default=1, min=0, max=4)
-    lighting_shadow_suppression: bpy.props.FloatProperty(name='Shadow suppression', default=2, min=0, max=8)
+    lighting_shadow_suppression: bpy.props.FloatProperty(name='Shadow suppression', default=1, min=0, max=8)
     lighting_fully_lit_threshold: bpy.props.FloatProperty(name='Fully lit threshold', default=1, min=.01, max=8)
     lighting_highlight_preservation: bpy.props.FloatProperty(name='Highlight preservation', default=1, min=0, max=1)
 

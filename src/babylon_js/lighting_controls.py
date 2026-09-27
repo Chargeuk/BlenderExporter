@@ -5,7 +5,7 @@ CONTROLS = {
     'Direct Strength': (1., 0., 100.), 'Indirect Strength': (1., 0., 100.),
     'Shadow Lift': (0., 0., 1.), 'Adaptive Smoothing': (0., 0., 2.),
     'Patch Size': (3., 0., 16.), 'Dark Difference': (.02, 0., 10.),
-    'Shadow Suppression': (2., 0., 8.), 'Fully Lit Threshold': (1., .01, 8.),
+    'Shadow Suppression': (1., 0., 8.), 'Fully Lit Threshold': (1., .01, 8.),
     'Highlight Preservation': (1., 0., 1.),
 }
 RUNTIME_CONTROLS = frozenset(('Shadow Suppression', 'Fully Lit Threshold', 'Highlight Preservation'))

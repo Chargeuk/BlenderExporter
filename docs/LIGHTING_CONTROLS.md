@@ -53,7 +53,7 @@ an alternative, first preserve the source and explicitly clear the scene
 - Colour uses UV1 with Repeat wrapping, lighting/IDs use UV2 with Extend.
   Neighbour and ID samples use Closest; the centre light sample is Linear.
 - Runtime-only Shadow Suppression / Fully Lit Threshold / Highlight Preservation
-  default to 2 / 1 / 1. The group tag and scene association let the exporter read
+  default to 1 / 1 / 1. The group tag and scene association let the exporter read
   these as dialog defaults; they do not affect this Blender preview.
 
 The caller supplies the ownership ID image generated with the matching maps.
