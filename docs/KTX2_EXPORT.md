@@ -121,3 +121,11 @@ This is lossy HDR encoding, not lossless storage. Alpha errors affect recovered 
 Version 3.3.8 also explicitly serializes PBR transparency mode. Materials configured opaque export alpha=1, mode=0 and no albedo-alpha transparency. Explicit cutout/blended modes retain their intent; shared opaque/cutout atlases preserve alpha if any usage needs it.
 
 Regression evidence: `tests/test_rgbd.py` covers the format, opt-in compatibility, per-map bounds and names; `tests/test_rgbd_blender.py` exports and transcodes a real Blender fixture; `tests/export_bedroom_rgbd.py` prepares the separate bedroom package. The browser harness extracts the actual KaDshow parser/plugin and renders both legacy and RGBD packages with native KTX2, Basis and ENV loaders. Its existing UBO warning also occurs on the legacy baseline; it is not a shader compile failure.
+
+## AgX lightmap compensation (3.3.16)
+
+The export dialog defaults [AgX compensation](AGX_LIGHTMAP.md) on for marker
+lightmaps. It requires RGBD and the AgX/sRGB view. Disable it for unchanged legacy
+exports. Current split-lighting controls are recombined into staging and surface
+colour is refreshed in UV2; originals are preserved. The low-level API remains
+unchanged unless `lightmap_agx=True` is supplied.

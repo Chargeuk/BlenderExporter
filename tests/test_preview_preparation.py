@@ -25,6 +25,7 @@ except ValueError:pass
 identity=preview_identity(mat)
 save_json(out/'identity-before.json',preview_identity(mat,diagnostic=True))
 node.inputs['Shadow Suppression'].default_value=4
+node.inputs['Baked Diffuse Preservation'].default_value=.15
 node.location=(50,30)
 save_json(out/'identity-after.json',preview_identity(mat,diagnostic=True))
 assert preview_identity(mat)==identity

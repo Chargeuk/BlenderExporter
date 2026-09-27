@@ -7,8 +7,9 @@ CONTROLS = {
     'Patch Size': (3., 0., 16.), 'Dark Difference': (.02, 0., 10.),
     'Shadow Suppression': (1., 0., 8.), 'Fully Lit Threshold': (1., .01, 8.),
     'Highlight Preservation': (1., 0., 1.),
+    'Baked Diffuse Preservation': (0., 0., 1.),
 }
-RUNTIME_CONTROLS = frozenset(('Shadow Suppression', 'Fully Lit Threshold', 'Highlight Preservation'))
+RUNTIME_CONTROLS = frozenset(('Shadow Suppression', 'Fully Lit Threshold', 'Highlight Preservation', 'Baked Diffuse Preservation'))
 
 
 def _managed_graphs(material):
@@ -174,3 +175,20 @@ def create_preview_material(colour, direct, indirect, island_ids, *,
     mat.node_tree.links.new(node.outputs['Shader'],output.inputs['Surface'])
     scene['bjs_lighting_controls_material']=mat.name
     return mat,node
+
+
+def upgrade_runtime_controls(material):
+    """Add missing runtime-only inputs without rebuilding or resetting saved graphs."""
+    added = 0
+    for node in material.node_tree.nodes:
+        if node.type != 'GROUP' or node.get('bjs_lighting_controls') != 1:
+            continue
+        for key in CONTROLS:
+            if key not in RUNTIME_CONTROLS or node.inputs.get(key) is not None:
+                continue
+            value, low, high = CONTROLS[key]
+            socket = node.node_tree.interface.new_socket(name=key, in_out='INPUT', socket_type='NodeSocketFloat')
+            socket.default_value=value; socket.min_value=low; socket.max_value=high
+            socket.description='Exported KaDshow runtime control; does not alter physical lighting bakes'
+            added += 1
+    return added

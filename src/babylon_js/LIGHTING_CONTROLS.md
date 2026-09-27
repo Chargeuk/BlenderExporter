@@ -42,8 +42,8 @@ an alternative, first preserve the source and explicitly clear the scene
   filter; it can soften actual contact shadows.
 - Colour uses UV1 with Repeat wrapping, lighting/IDs use UV2 with Extend.
   Neighbour and ID samples use Closest; the centre light sample is Linear.
-- Runtime-only Shadow Suppression / Fully Lit Threshold / Highlight Preservation
-  default to 1 / 1 / 1. The group tag and scene association let the exporter read
+- Runtime-only Shadow Suppression / Fully Lit Threshold / Highlight Preservation /
+  Baked Diffuse Preservation default to 1 / 1 / 1 / 0. The group tag and scene association let the exporter read
   these as dialog defaults; they do not affect this Blender preview.
 
 The caller supplies the ownership ID image generated with the matching maps.
@@ -76,3 +76,8 @@ Initializer graphs carry source dimensions, sampler roles and all 24 pixel-offse
 To move from a pilot to final source resolution, replace all direct/indirect/ownership images with matching dimensions (or correctly sized placeholders before the new bake), then call `update_preview_resolution(material)`, update the configuration source size and save. The helper refreshes only UV offset constants and preserves control values; it validates all managed groups before mutating them. Recombine before capture. Never scale ownership IDs from an unrelated layout.
 
 Custom/untagged graphs return `unverified_custom_graph` and need manual source-offset verification when changing resolution. The helper refuses automatic migration. This compatibility path is not a managed-graph pass. Delivery-only downsizing requires neither an offset update nor a physical rebake.
+
+## Export appearance
+
+See [AgX lightmap export](AGX_LIGHTMAP.md) for default-on compensation, colour-map
+preparation and `upgrade_runtime_controls(material)` for existing saved nodes.

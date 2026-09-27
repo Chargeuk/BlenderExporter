@@ -37,7 +37,7 @@ def main():
     if root == source_root or source_root in root.parents:
         raise ValueError('Candidate output must be outside the source environment folder')
     inputs = {str(a.config.resolve()): sha(a.config), c['_source']: sha(c['_source'])}
-    dependencies=[HERE.parent/name for name in ('environment_controls.py','env_export.py','lighting_controls.py')]
+    dependencies=[HERE.parent/name for name in ('environment_controls.py','env_export.py','lighting_controls.py','agx_lightmap.py')]
     for f in sorted(HERE.glob('*.py')) + sorted(LIGHTMAP.glob('*.py')) + dependencies:
         inputs[str(f)] = sha(f)
     for im in c.get('source_images', []):
@@ -196,6 +196,8 @@ def main():
                 if f in ('reuse_lightmaps','recombine','env_converter'):continue
                 if sha(f)!=digest:raise ValueError('Source/tool changed during build: '+f)
         outputs={str(f.relative_to(root)):sha(f) for f in stage.rglob('*') if f.is_file()}
+        if name=='bake':
+            for f in ('albedo_uv.exr','albedo_uv.exr.json'): outputs['masters/'+f]=sha(root/'masters'/f)
         if name=='process':
             for f in ('direct_final.exr','indirect_final.exr','island_ids.exr'): outputs['masters/'+f]=sha(root/'masters'/f)
         if name=='combine':

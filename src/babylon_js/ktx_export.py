@@ -281,6 +281,12 @@ def make_config(raw_model, work, options, context=None, objects=()):
         if encoding not in ('legacy', 'rgbd-v1'):
             raise ValueError('Unsupported lightmap encoding: ' + str(encoding))
         rgbd = encoding == 'rgbd-v1'
+        if options.get('lightmap_agx', False):
+            if not rgbd:
+                raise ValueError('AgX lightmap compensation requires RGBD encoding; disable it for unchanged legacy exports')
+            from .agx_lightmap import export_compensated
+            source, report = export_compensated(context, objects, marker, source, work / 'agx')
+            options['agx_report'] = report
         output = core.lightmap_output_name(source.stem + ('_rgbd' if rgbd else '') + '.ktx2')
         specs.append(dict(source=str(source), output=output, lightmap_markers=[marker], encoding=encoding,
                           size=core.lightmap_size(options.get('lightmap_size', 0)),
@@ -354,6 +360,11 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
             raise ValueError('Choose a .babylon output filename')
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
         work = target.parent / '.bjs-ktx' / target.stem / stamp
+        # Encoders and Blender's image writer may still use Windows MAX_PATH.
+        # Keep staging short when a deeply nested environment would exceed it.
+        if os.name == 'nt' and len(str(work)) + 120 > 250:
+            import tempfile
+            work = Path(tempfile.mkdtemp(prefix='bjs-export-'))
         raw = work / 'source_export' / target.name
         raw.parent.mkdir(parents=True)
         old_dir = settings.textureDir

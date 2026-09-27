@@ -8,7 +8,7 @@ from pathlib import Path
 import bpy
 from common import sha
 
-RUNTIME = {'Shadow Suppression', 'Fully Lit Threshold', 'Highlight Preservation'}
+RUNTIME = {'Shadow Suppression', 'Fully Lit Threshold', 'Highlight Preservation', 'Baked Diffuse Preservation'}
 UI = {'name','label','location','location_absolute','width','width_hidden','height','dimensions','select',
       'show_options','show_preview','show_texture','hide','use_custom_color','color',
       'warning_propagation','bl_description','bl_label','bl_icon','bl_static_type',

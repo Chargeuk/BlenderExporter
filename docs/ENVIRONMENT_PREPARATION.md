@@ -33,7 +33,7 @@ Commands stop after the named stage, running all preceding stages unless resume/
 | Command | Result |
 | --- | --- |
 | `preflight` | Verify source files, source materials, UV bounds, role selections, managed World and preview material |
-| `bake` | Separate zero-margin diffuse DIRECT/INDIRECT arrays; evaluated receiver normals preserved; local receiving-metal cap patches |
+| `bake` | Linear surface-colour map in lightmap UVs, then separate zero-margin diffuse DIRECT/INDIRECT arrays; evaluated receiver normals preserved; local receiving-metal cap patches |
 | `ownership` | Extract island ownership from UV triangles and actual bake coverage; merge receiver-only patches |
 | `process` | Mirrored own-island OIDN context, interior copyback, final gap dilation; direct/indirect EXRs and island IDs |
 | `combine` | Evaluate the saved preview shader with colour replaced by white, then dilate gaps; unclipped linear lighting EXR |
@@ -216,3 +216,9 @@ capture and runtime views. Changing these materials invalidates the capture/ENV
 and thumbnail, but does not invalidate physical bakes while the objects remain
 excluded from transport. This feature does not provide bloom; it provides surface
 emission. Preserve the source image/scene identity when regenerating captures.
+
+## Colour reprojection for export
+
+Every physical bake creates `masters/albedo_uv.exr` plus its JSON record.
+This is an intermediate, not another runtime texture. Export refreshes colour
+from the current materials before [AgX compensation](AGX_LIGHTMAP.md).

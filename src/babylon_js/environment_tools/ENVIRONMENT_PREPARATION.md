@@ -33,7 +33,7 @@ Commands stop after the named stage, running all preceding stages unless resume/
 | Command | Result |
 | --- | --- |
 | `preflight` | Verify source files, source materials, UV bounds, role selections, managed World and preview material |
-| `bake` | Separate zero-margin diffuse DIRECT/INDIRECT arrays; evaluated receiver normals preserved; local receiving-metal cap patches |
+| `bake` | Linear surface-colour map in lightmap UVs (`masters/albedo_uv.exr`), then separate zero-margin diffuse DIRECT/INDIRECT arrays; evaluated receiver normals preserved; local receiving-metal cap patches |
 | `ownership` | Extract island ownership from UV triangles and actual bake coverage; merge receiver-only patches |
 | `process` | Mirrored own-island OIDN context, interior copyback, final gap dilation; direct/indirect EXRs and island IDs |
 | `combine` | Evaluate the saved preview shader with colour replaced by white, then dilate gaps; unclipped linear lighting EXR |
@@ -196,3 +196,9 @@ Baked capture assigns one `preview_material` to every receiver slot and uses one
 Managed initializer graphs have a source-resolution guard (see the lighting-controls manual). After replacing all source lighting/ID images at a new size, explicitly refresh offsets with `update_preview_resolution`, update config and save before running. Preflight reports custom graphs as unverified; inspect their offsets manually. Runtime-only resizing does not change source offsets.
 
 For lighting variants, use separate saved scenes/configurations, map paths, provenance and runtime destinations; share only explicitly unchanged source assets. Shared geometry/UV/material edits require revalidating every affected variant. For open or mixed spaces use a representative clear capture point and review the sky/ground/enclosure balance; this remains a scene capture, not a substitution of the source HDRI.
+
+## Colour reprojection for export
+
+Every physical bake also prepares albedo in UV2. It is an intermediate source, not
+an extra runtime texture. Export refreshes it from current materials before optional
+[AgX compensation](../AGX_LIGHTMAP.md). Physical masters and room HDR captures remain linear.

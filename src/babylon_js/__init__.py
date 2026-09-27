@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 15),
+    'version': (3, 3, 16),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -102,6 +102,9 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                ('shadow-aware', 'Shadow-aware reflections', 'Use brightness-dependent reflection suppression')))
     lighting_baked_intensity: bpy.props.FloatProperty(name='Baked light strength', default=1, min=0, max=4)
     lighting_reflection_intensity: bpy.props.FloatProperty(name='Reflection strength', default=1, min=0, max=4)
+    lighting_baked_diffuse_preservation: bpy.props.FloatProperty(
+        name='Baked diffuse preservation', default=0, min=0, max=1,
+        description='Restore original albedo in baked diffuse: 0 follows PBR energy reduction, 1 preserves full colour')
     lighting_shadow_suppression: bpy.props.FloatProperty(name='Shadow suppression', default=1, min=0, max=8)
     lighting_fully_lit_threshold: bpy.props.FloatProperty(name='Fully lit threshold', default=1, min=.01, max=8)
     lighting_highlight_preservation: bpy.props.FloatProperty(name='Highlight preservation', default=1, min=0, max=1)
@@ -137,6 +140,9 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                ('2048', '2048 x 2048', 'Maximum 2K square'),
                ('1024', '1024 x 1024', 'Maximum 1K square'),
                ('512', '512 x 512', 'Maximum 512 square')))
+    ktx_lightmap_agx: bpy.props.BoolProperty(
+        name='Match Blender AgX using lightmap compensation', default=True,
+        description='Recombine saved controls, refresh albedo in UV2 and compensate the export copy; requires RGBD and AgX/sRGB view, original masters remain unchanged')
     ktx_lightmap_marker: bpy.props.StringProperty(
         name='Lightmap marker', default='',
         description='Exact exported lightmap_ node name; empty selects the only marker in the export')
@@ -218,7 +224,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                            codec=self.ktx_codec, threads=self.ktx_threads,
                            lightmap=self.ktx_lightmap, lightmap_marker=self.ktx_lightmap_marker,
                            auto_lightmap=self.ktx_auto_lightmap, lightmap_encoding=self.ktx_lightmap_encoding,
-                           lightmap_size=int(self.ktx_lightmap_size),
+                           lightmap_size=int(self.ktx_lightmap_size), lightmap_agx=self.ktx_lightmap_agx,
                            convert_materials=self.convert_to_ktx2)
             if self.export_skybox:
                 options['skybox'] = dict(executable=self.basis_executable, image=self.skybox_image,
@@ -234,6 +240,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                                                roughness=self.material_roughness_multiplier),
                          lighting_options=dict(mode=self.lighting_mode, bakedIntensity=self.lighting_baked_intensity,
                                                reflectionIntensity=self.lighting_reflection_intensity,
+                                               bakedDiffusePreservation=self.lighting_baked_diffuse_preservation,
                                                shadowSuppression=self.lighting_shadow_suppression,
                                                fullyLitThreshold=self.lighting_fully_lit_threshold,
                                                highlightPreservation=self.lighting_highlight_preservation))
@@ -268,7 +275,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         lighting.prop(self, 'lighting_mode')
         if self.lighting_mode != 'original':
             for field in ('lighting_baked_intensity', 'lighting_reflection_intensity',
-                          'lighting_shadow_suppression', 'lighting_fully_lit_threshold',
+                          'lighting_baked_diffuse_preservation', 'lighting_shadow_suppression', 'lighting_fully_lit_threshold',
                           'lighting_highlight_preservation'):
                 lighting.prop(self, field)
         lighting.label(text='Choose Original when re-exporting older, unchanged bakes')
@@ -291,6 +298,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             options.prop(self, 'ktx_lightmap_marker')
             options.prop(self, 'ktx_lightmap_encoding')
             options.prop(self, 'ktx_lightmap_size')
+            options.prop(self, 'ktx_lightmap_agx')
             if self.ktx_auto_lightmap and not self.ktx_lightmap:
                 from .ktx_export import infer_lightmap
                 objects = context.selected_objects if self.export_selected else context.scene.objects

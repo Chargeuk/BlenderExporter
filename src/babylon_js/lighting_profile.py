@@ -2,9 +2,9 @@
 import math
 
 DEFAULT_LIGHTING = dict(version=1, mode='shadow-aware', bakedIntensity=1.0,
-                       reflectionIntensity=1.0, shadowSuppression=1.0,
+                       reflectionIntensity=1.0, bakedDiffusePreservation=0.0, shadowSuppression=1.0,
                        fullyLitThreshold=1.0, highlightPreservation=1.0)
-RANGES = dict(bakedIntensity=(0, 4), reflectionIntensity=(0, 4),
+RANGES = dict(bakedIntensity=(0, 4), reflectionIntensity=(0, 4), bakedDiffusePreservation=(0, 1),
               shadowSuppression=(0, 8), fullyLitThreshold=(.01, 8), highlightPreservation=(0, 1))
 
 
@@ -36,7 +36,8 @@ def apply_lighting_profile(model, options=None):
     return count
 
 
-NODE_FIELDS = {'Shadow Suppression': 'shadowSuppression',
+NODE_FIELDS = {'Baked Diffuse Preservation': 'bakedDiffusePreservation',
+               'Shadow Suppression': 'shadowSuppression',
                'Fully Lit Threshold': 'fullyLitThreshold',
                'Highlight Preservation': 'highlightPreservation'}
 
@@ -59,6 +60,8 @@ def scene_lighting_profile(context, options=None):
         raise ValueError('Expected one tagged lighting-controls node in ' + str(material_name))
     for socket_name, key in NODE_FIELDS.items():
         socket = nodes[0].inputs.get(socket_name)
+        if socket is None and key == 'bakedDiffusePreservation':
+            continue  # Older saved nodes retain legacy zero until explicitly upgraded.
         if socket is None or socket.is_linked:
             raise ValueError('Saved lighting control must be an unlinked scalar: ' + socket_name)
         result[key] = float(socket.default_value)
@@ -70,6 +73,7 @@ def prefill_lighting_options(operator, context):
     if not context.scene.get('bjs_lighting_controls_material'):
         return
     profile = scene_lighting_profile(context)
+    operator.lighting_baked_diffuse_preservation = profile['bakedDiffusePreservation']
     operator.lighting_shadow_suppression = profile['shadowSuppression']
     operator.lighting_fully_lit_threshold = profile['fullyLitThreshold']
     operator.lighting_highlight_preservation = profile['highlightPreservation']

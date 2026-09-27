@@ -1,4 +1,4 @@
-# KaDshow exported lighting profile (exporter 3.3.9)
+# KaDshow exported lighting profile (exporter 3.3.16)
 
 New exports carry `metadata.kadshowLighting` on each `lightmap_` node. This survives staged KTX2 conversion and the KaDshow mesh-only loader. It is separate from `kadshowLightmapEncoding`: legacy and RGBD maps can use either lighting mode. Existing files without this field always select Original, even when they already use RGBD.
 
@@ -8,6 +8,7 @@ New exports carry `metadata.kadshowLighting` on each `lightmap_` node. This surv
   "mode": "shadow-aware",
   "bakedIntensity": 1,
   "reflectionIntensity": 1,
+  "bakedDiffusePreservation": 0,
   "shadowSuppression": 1,
   "fullyLitThreshold": 1,
   "highlightPreservation": 1
@@ -60,3 +61,10 @@ When opening the export dialog, its `invoke` method reads those three values onc
 Scripted/background callers bypass `invoke`: pass `lighting_options` explicitly. They may call `scene_lighting_profile(context)` to start from the saved node, then override the returned dictionary. Without an association the normal exporter defaults and existing scripted arguments work as before. Missing, duplicate, linked, nonfinite and out-of-range associated controls are rejected when prefilling. An explicit headless export does not depend on the association.
 
 The metadata remains `kadshowLighting`, so KaDshow uses its existing versioned profile parser. Older files without the metadata retain the original shader.
+
+## Baked diffuse preservation
+
+A runtime-only 0-1 node input (default 0) initializes the export dialog. The actual
+dialog value is serialized as `bakedDiffusePreservation`. At 1 it restores original
+albedo in baked diffuse; lower values retain PBR energy reduction. Old saved
+nodes without the input retain zero until explicitly upgraded.

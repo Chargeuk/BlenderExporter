@@ -178,6 +178,8 @@ def target_image(c,materials):
 def bake(c,root,stage):
     s=setup(c);preflight(c)
     receivers=select(c,'receivers');contributors=select(c,'contributors'); lights=select(c,'bake_lights')
+    from babylon_js.agx_lightmap import bake_albedo
+    bake_albedo(bpy.context,receivers,root/'masters/albedo_uv.exr',c['size'],c.get('uv','SimpleBake'))
     for o in s.objects:
         if o.type=='MESH':o.hide_render=o not in receivers+contributors
         if o.type=='LIGHT':o.hide_render=o not in lights
@@ -377,6 +379,8 @@ def main():
         for o in bpy.data.objects:
             if o.get('bjs_lightmap_image'):o['bjs_lightmap_image']='//../masters/combined.exr'
         bpy.context.scene.world['bjs_environment_image']='//../capture/capture.exr'
+        if (root/'masters/albedo_uv.exr').is_file():
+            bpy.context.scene['bjs_lightmap_albedo']='//../masters/albedo_uv.exr'
         for im in bpy.data.images:
             if im.source=='FILE' and im.filepath:im.filepath=bpy.path.relpath(bpy.path.abspath(im.filepath),start=str(stage))
         bpy.ops.wm.save_as_mainfile(filepath=str(stage/'restored.blend'),relative_remap=False)
