@@ -1,5 +1,6 @@
 import hashlib
 import json
+import time
 from pathlib import Path
 
 
@@ -14,7 +15,15 @@ def save_json(path, value):
     path = Path(path)
     tmp = path.with_suffix(path.suffix + '.tmp')
     tmp.write_text(json.dumps(value, indent=2), encoding='utf8')
-    tmp.replace(path)
+    # Windows readers and antivirus can briefly hold the destination open.
+    for attempt in range(20):
+        try:
+            tmp.replace(path)
+            break
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def load_config(path):

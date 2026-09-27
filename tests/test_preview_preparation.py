@@ -59,6 +59,20 @@ node.inputs['Indirect Strength'].default_value=2
 node.inputs['Shadow Lift'].default_value=.25
 adjusted=evaluate('adjusted');assert np.max(abs(adjusted-6))<2e-5
 
+# Evaluate the actual shader with negative lift: floor each channel independently
+# after combining, and preserve positive HDR rather than clipping to one.
+node.inputs['Direct Strength'].default_value=0
+node.inputs['Indirect Strength'].default_value=1
+node.inputs['Shadow Lift'].default_value=-.05
+assert abs(node.inputs['Shadow Lift'].default_value+.05)<1e-6
+mixed=image('mixed-sign-input',(0.,.02,3.))
+indirect=replace_from_disk(indirect,mixed.filepath)
+floored=evaluate('negative-lift')
+assert np.max(abs(floored-np.array([0.,0.,3.1])))<2e-5
+node.inputs['Direct Strength'].default_value=1
+recovered=evaluate('direct-recovers-negative-indirect')
+assert np.max(abs(recovered-np.array([1.95,1.971,5.1])))<2e-5
+
 # Foreign bright islands cannot brighten a dark neighbour; within-island smoothing works.
 node.inputs['Direct Strength'].default_value=0;node.inputs['Indirect Strength'].default_value=1;node.inputs['Shadow Lift'].default_value=0
 a=np.ones((32,32,4),np.float32);a[:,:16,:3]=1;a[:,16:,:3]=100

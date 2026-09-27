@@ -162,7 +162,11 @@ def create_preview_material(colour, direct, indirect, island_ids, *,
     amount=math('MULTIPLY',math('MULTIPLY',q,ins.outputs['Adaptive Smoothing']),math('GREATER_THAN',ins.outputs['Patch Size'],0.))
     indirect_value=vector('ADD',centre_adjusted,vector('SCALE',delta_vector,amount))
     illumination=vector('ADD',vector('SCALE',direct_value,ins.outputs['Direct Strength']),indirect_value)
-    emission=nodes.new('ShaderNodeEmission');links.new(vector('MULTIPLY',colour_value,illumination),emission.inputs['Color'])
+    # Floor only the final RGB: artistic adjustments may go negative, while HDR must survive.
+    final_rgb=vector('MAXIMUM',vector('MULTIPLY',colour_value,illumination),(0.,0.,0.))
+    final_rgb.node.name='Nonnegative final lighting'
+    final_rgb.node.label='Clamp negative illumination to black'
+    emission=nodes.new('ShaderNodeEmission');links.new(final_rgb,emission.inputs['Color'])
     emission.inputs['Strength'].default_value=1.;links.new(emission.outputs[0],out.inputs['Shader'])
     mat=bpy.data.materials.new(name);mat.use_nodes=True;mat.node_tree.nodes.clear();mat.use_fake_user=True
     node=mat.node_tree.nodes.new('ShaderNodeGroup');node.node_tree=tree;node.name='KaDshow Lighting Controls';node['bjs_lighting_controls']=1

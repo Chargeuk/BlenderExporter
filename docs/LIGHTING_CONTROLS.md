@@ -38,8 +38,18 @@ an alternative, first preserve the source and explicitly clear the scene
   renormalizes remaining weights and corrects qualifying dark deviations after
   lift/strength. Patch Size is in pixels. Zero radius bypasses correction.
 - Dark Difference defaults to 0.02, radius to 3; smoothing supports 0–2 including
-  deliberate overdrive. HDR values are not clamped. This is an artistic preview
-  filter; it can soften actual contact shadows.
+  deliberate overdrive. This is an artistic preview filter; it can soften actual
+  contact shadows.
+- Final emission RGB is `max(colour * adjusted_lighting, 0)` per channel, after
+  combining and smoothing. Negative Shadow Lift or smoothing overdrive can
+  otherwise produce negative illumination that RGBD cannot encode. This lower
+  bound preserves positive HDR values above 1; it is not a 0–1 clamp. Slider
+  values and intermediate calculations are preserved.
+- New groups include this floor. Existing groups saved in Blender files retain
+  their saved graph: explicitly add a Vector Math Maximum with `(0, 0, 0)`
+  immediately before the emission colour input when updating an existing
+  graph. Recombine and regenerate dependent captures after that graph change;
+  a physical rebake is unnecessary if its inputs are unchanged.
 - Colour uses UV1 with Repeat wrapping, lighting/IDs use UV2 with Extend.
   Neighbour and ID samples use Closest; the centre light sample is Linear.
 - Runtime-only Shadow Suppression / Fully Lit Threshold / Highlight Preservation

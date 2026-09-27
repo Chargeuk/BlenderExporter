@@ -191,8 +191,28 @@ reconstructs original ownership from the fully dilated ID image.
 
 ## Supported surface scope
 
-Baked capture assigns one `preview_material` to every receiver slot and uses one UV1 colour atlas. Physical source materials may differ, but extra colour atlases, independent visible emission and alpha-cutout foliage are not automatically preserved. Specify and validate a representative preparation/capture/export route before extending beyond this scope. Glass follows its explicit separate role. A material budget exception does not make the common preview support that surface.
+Baked capture assigns one `preview_material` to every receiver slot and uses one UV1 colour atlas. Physical source materials may differ, but extra colour atlases and alpha-cutout foliage are not automatically preserved. Independent visible emission uses the explicit `visible_emitters` selection below. Specify and validate a representative preparation/capture/export route before extending beyond this scope. Glass follows its explicit separate role. A material budget exception does not make the common preview support that surface.
 
 Managed initializer graphs have a source-resolution guard (see the lighting-controls manual). After replacing all source lighting/ID images at a new size, explicitly refresh offsets with `update_preview_resolution`, update config and save before running. Preflight reports custom graphs as unverified; inspect their offsets manually. Runtime-only resizing does not change source offsets.
 
 For lighting variants, use separate saved scenes/configurations, map paths, provenance and runtime destinations; share only explicitly unchanged source assets. Shared geometry/UV/material edits require revalidating every affected variant. For open or mixed spaces use a representative clear capture point and review the sky/ground/enclosure balance; this remains a scene capture, not a substitution of the source HDRI.
+
+
+### Visible-only emissive fixtures
+
+Optional `visible_emitters` uses the usual selector syntax, for example
+`"visible_emitters": {"names": ["Pendant bulb"]}`. The default is empty.
+These objects must be separate from receivers, contributors and glass; preflight
+and capture reject overlapping sets. Physical bakes exclude these emitters:
+explicit analytic fixture lights supply their illumination. This avoids counting
+both an emitter and its stand-in light. The emitter objects retain their own
+materials and are included in baked/physical captures and thumbnails. Use this
+for visibly glowing bulbs, not for mesh emitters intended to light the bake.
+
+Keep them out of runtime lightmap ancestry so their emissive PBR material is not
+replaced by the lightmap plugin. Include them explicitly in delivery selection.
+Check emitted colour/intensity in the exported material and inspect the actual
+capture and runtime views. Changing these materials invalidates the capture/ENV
+and thumbnail, but does not invalidate physical bakes while the objects remain
+excluded from transport. This feature does not provide bloom; it provides surface
+emission. Preserve the source image/scene identity when regenerating captures.

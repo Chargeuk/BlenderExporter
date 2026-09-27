@@ -97,6 +97,9 @@ def preflight(c):
     if not receivers:raise ValueError('No bake receivers selected')
     if set(receivers)&set(contributors):raise ValueError('Receiver and contributor sets overlap')
     if not set(select(c,'metal_receivers')).issubset(receivers):raise ValueError('Metal receivers must be bake receivers')
+    emitters=select(c,'visible_emitters')
+    if set(emitters)&set(receivers+contributors+select(c,'glass')):
+        raise ValueError('Visible-only emitters must be separate from receivers, transport and glass')
     uvname=c.get('uv','SimpleBake');missing=[]; triangles=0
     for o in receivers:
         if any(slot.link!='DATA' for slot in o.material_slots):raise ValueError('Use data-linked material slots for baking: '+o.name)
@@ -132,7 +135,7 @@ def preflight(c):
     if c.get('preview_material') not in bpy.data.materials:raise ValueError('Missing configured preview material')
     resolution=check_preview_resolution(c)
     return {'receiver_count':len(receivers),'triangles':triangles,'receivers':[o.name for o in receivers],
-        'contributors':[o.name for o in contributors],'excluded_glass':[o.name for o in select(c,'glass')],
+        'contributors':[o.name for o in contributors],'visible_only_emitters':[o.name for o in emitters],'excluded_glass':[o.name for o in select(c,'glass')],
         'world_controls':world_tools.settings(node),'missing_source_images':missing,'blender_version':bpy.app.version_string,
         'samples':c['samples'],'quality':c.get('quality','final'),'preview_resolution':resolution}
 
@@ -178,6 +181,23 @@ def bake(c,root,stage):
     for o in s.objects:
         if o.type=='MESH':o.hide_render=o not in receivers+contributors
         if o.type=='LIGHT':o.hide_render=o not in lights
+    effective_records=[]
+    def record_effective(phase,mode,names):
+        enabled_lights=sorted(o.name for o in s.objects if o.type=='LIGHT' and not o.hide_render)
+        assert enabled_lights==sorted(o.name for o in lights), 'Unexpected bake light visibility'
+        assert not s.cycles.use_adaptive_sampling
+        assert s.cycles.samples==c['samples'][mode]
+        if c.get('quality')=='final' and mode=='INDIRECT':
+            assert s.cycles.samples==2048, 'Final indirect must be exactly 2048 fixed samples'
+        effective_records.append(dict(phase=phase,pass_name=mode,receivers=names,
+            samples=s.cycles.samples,adaptive=s.cycles.use_adaptive_sampling,
+            denoising=s.cycles.use_denoising,device=s.cycles.device,
+            compute_device=bpy.context.preferences.addons['cycles'].preferences.compute_device_type,
+            enabled_devices=[dict(name=d.name,type=d.type) for d in bpy.context.preferences.addons['cycles'].preferences.devices if d.use],
+            enabled_lights=enabled_lights,
+            excluded_lights=sorted(o.name for o in s.objects if o.type=='LIGHT' and o.hide_render),
+            diffuse_bounces=s.cycles.diffuse_bounces,total_bounces=s.cycles.max_bounces))
+        save_json(stage/'effective_bake_settings.json',effective_records)
     copies,catalogue=evaluate_receivers(c);save_json(stage/'islands.json',catalogue)
     for o in receivers:o.hide_render=True
     bpy.ops.object.select_all(action='DESELECT')
@@ -191,6 +211,7 @@ def bake(c,root,stage):
     im=target_image(c,list(proxy.data.materials));proxy.data.uv_layers.active_index=proxy.data.uv_layers.find(c.get('uv','SimpleBake'))
     for mode in ('DIRECT','INDIRECT'):
         s.cycles.samples=c['samples'][mode]
+        record_effective('joined',mode,[o.name for o in receivers])
         save_json(stage/'progress.json',{'phase':'baking','pass':mode,'samples':s.cycles.samples,'time':time.time()})
         bpy.ops.object.bake(type='DIFFUSE',pass_filter={mode},margin=0,use_clear=True,use_selected_to_active=False,uv_layer=c.get('uv','SimpleBake'))
         np.save(stage/(mode.lower()+'_raw.npy'),raw_pixels(im))
@@ -218,6 +239,7 @@ def bake(c,root,stage):
         bpy.ops.object.select_all(action='DESELECT');o.hide_set(False);o.select_set(True);bpy.context.view_layer.objects.active=o
         for mode in ('DIRECT','INDIRECT'):
             s.cycles.samples=c['samples'][mode]
+            record_effective('metal_cap',mode,[o.name])
             save_json(stage/'progress.json',{'phase':'metal_cap','object':o.name,'completed':index,'total':len(caps),'pass':mode})
             bpy.ops.object.bake(type='DIFFUSE',pass_filter={mode},margin=0,use_clear=True,use_selected_to_active=False,uv_layer=c.get('uv','SimpleBake'))
             a=raw_pixels(im);path=stage/f'metal_{index}_{mode.lower()}.npz';np.savez_compressed(path,pixels=a)
@@ -292,7 +314,10 @@ def capture(c,root,stage,thumbnail=False):
     if mode=='baked':
         check_preview_resolution(c)
         verify_combination(bpy.data.materials[c['preview_material']],root/'masters/combined.exr',root/'masters/combined.provenance.json')
-    visible=receivers+(glass if thumbnail else [])
+    emitters=select(c,'visible_emitters')
+    if set(emitters)&set(receivers+select(c,'contributors')+glass):
+        raise ValueError('Visible-only emitters must be separate from receivers, transport and glass')
+    visible=receivers+emitters+(glass if thumbnail else [])
     if mode=='physical':visible+=select(c,'contributors')
     for o in s.objects:
         if o.type=='MESH':o.hide_render=o not in visible
@@ -328,7 +353,7 @@ def capture(c,root,stage,thumbnail=False):
     import OpenImageIO as oiio
     pixels=oiio.ImageBuf(str(path)).get_pixels(oiio.FLOAT)
     if not np.isfinite(pixels).all():raise ValueError('Capture contains non-finite pixels')
-    return {'mode':mode,'world_output':branch,'position':list(camera.location),'rotation':list(camera.rotation_euler),
+    return {'mode':mode,'visible_emitters':[o.name for o in emitters],'world_output':branch,'position':list(camera.location),'rotation':list(camera.rotation_euler),
         'samples':s.cycles.samples,'dimensions':[s.render.resolution_x,s.render.resolution_y],'rays':rays,
         'rgb_min':float(pixels[:,:,:3].min()),'rgb_max':float(pixels[:,:,:3].max()),'rgb_mean':float(pixels[:,:,:3].mean())}
 
