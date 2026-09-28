@@ -12,6 +12,12 @@
   "diffuse_bounces": 8,
   "total_bounces": 12,
   "metallic_cap": 0.8,
+  "ao": {
+    "enabled": true,
+    "distance": 0.5,
+    "samples": 128,
+    "node_samples": 64
+  },
   "preview_material": "KaDshow Split Lighting PREVIEW",
   "receivers": {
     "property": "role",
@@ -42,7 +48,8 @@
     "direct": "textures/lightmaps/direct_final.exr",
     "indirect": "textures/lightmaps/indirect_final.exr",
     "island_ids": "textures/lightmaps/island_ids.exr",
-    "combined": "textures/lightmaps/lightmap.exr"
+    "combined": "textures/lightmaps/lightmap.exr",
+    "ao": "textures/lightmaps/ao.exr"
   },
   "source_images": [
     "textures/atlases/colour.png",

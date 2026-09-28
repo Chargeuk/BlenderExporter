@@ -46,6 +46,9 @@ def _resolution_plan(tree, expected_size=None):
     if len(dimensions) != 1 or min(next(iter(dimensions))) < 1:
         raise ValueError('Lighting and ownership image dimensions must match')
     size = next(iter(dimensions))
+    ao=[n.image for n in tree.nodes if n.get('bjs_preview_image_role')=='ao' and n.image]
+    if any(tuple(im.size)!=size for im in ao):
+        raise ValueError('AO and lighting image dimensions must match')
     if expected_size is not None and tuple(expected_size) != size:
         raise ValueError('Preview source dimensions do not match the configured bake size')
     required = {(x, y) for x in range(-2, 3) for y in range(-2, 3) if x or y}
@@ -84,7 +87,7 @@ def update_preview_resolution(material):
 
 def create_preview_material(colour, direct, indirect, island_ids, *,
                             name='KaDshow Split Lighting PREVIEW',
-                            uv1='UVMap', uv2='SimpleBake', scene=None):
+                            uv1='UVMap', uv2='SimpleBake', scene=None, ao=None):
     """Use loaded images, return (material, controls node). New names only.
 
     Inputs must be sRGB colour, decoded linear lightmaps and Non-Color float IDs.
@@ -174,6 +177,8 @@ def create_preview_material(colour, direct, indirect, island_ids, *,
     output=mat.node_tree.nodes.new('ShaderNodeOutputMaterial');output.location=(340,0)
     mat.node_tree.links.new(node.outputs['Shader'],output.inputs['Surface'])
     scene['bjs_lighting_controls_material']=mat.name
+    from .lightmap_grading import upgrade
+    upgrade(mat, ao, uv2)
     return mat,node
 
 

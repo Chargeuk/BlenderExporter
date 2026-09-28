@@ -108,7 +108,7 @@ def target_image(materials, size):
     return im
 
 
-def bake_albedo(context, objects, path, size, uv=None):
+def bake_albedo(context, objects, path, size, uv=None, colour_adjustment=None):
     """Refresh colour in UV2 on evaluated copies; original scene/materials stay intact."""
     import bpy
     objects = list(objects)
@@ -144,7 +144,10 @@ def bake_albedo(context, objects, path, size, uv=None):
                             raise ValueError('Albedo preparation requires one Principled node: '+source.name)
                         base = principal[0].inputs['Base Color']
                         emit = nt.nodes.new('ShaderNodeEmission')
-                        if base.is_linked: nt.links.new(base.links[0].from_socket,emit.inputs['Color'])
+                        if colour_adjustment:
+                            from .colour_adjustment import apply_to_base
+                            nt.links.new(apply_to_base(nt,base,colour_adjustment,layer),emit.inputs['Color'])
+                        elif base.is_linked: nt.links.new(base.links[0].from_socket,emit.inputs['Color'])
                         else: emit.inputs['Color'].default_value = base.default_value
                         for output in [n for n in nt.nodes if n.type=='OUTPUT_MATERIAL']:
                             nt.links.new(emit.outputs[0],output.inputs['Surface'])
@@ -164,6 +167,8 @@ def bake_albedo(context, objects, path, size, uv=None):
                 def visit(node):
                     if node in seen: return True
                     seen.add(node)
+                    if node.type=='GROUP' and node.node_tree.get('bjs_colour_adjustment_schema')==1:
+                        return all(visit(link.from_node) for socket in node.inputs for link in socket.links)
                     return node.type in allowed and all(visit(link.from_node) for socket in node.inputs for link in socket.links)
                 return all(visit(n) for n in mat.node_tree.nodes if n.type=='OUTPUT_MATERIAL' and n.is_active_output)
             layouts = {(tuple(u.name for u in mesh.uv_layers), next((u.name for u in mesh.uv_layers if u.active_render), '')) for _,mesh,_ in meshes}
@@ -187,12 +192,14 @@ def bake_albedo(context, objects, path, size, uv=None):
     return array
 
 
-def combine_saved_controls(context, size, path):
+def combine_saved_controls(context, size, path, *, material=None):
     """Evaluate managed preview with white albedo to obtain current combined lighting."""
     import bpy
-    name = context.scene.get('bjs_lighting_controls_material')
-    if not name: return None
-    source = bpy.data.materials.get(name)
+    source = material
+    if source is None:
+        name = context.scene.get('bjs_lighting_controls_material')
+        if not name: return None
+        source = bpy.data.materials.get(name)
     if not source or not source.use_nodes: raise ValueError('Missing saved lighting controls')
     from .lighting_controls import validate_preview_resolution
     validate_preview_resolution(source,(size,size))
@@ -216,6 +223,8 @@ def combine_saved_controls(context, size, path):
                     for link in list(n.outputs['Color'].links): tree.links.new(white.outputs[0],link.to_socket)
                     count += 1
         whiten(mat.node_tree)
+        from .colour_adjustment import bypass
+        bypass(mat.node_tree)
         if not count: raise ValueError('AgX export requires tagged colour sampler(s) in the managed preview')
         mesh = bpy.data.meshes.new('TEMP lighting atlas'); mesh.from_pydata([(0,0,0),(1,0,0),(1,1,0),(0,1,0)],[],[(0,1,2,3)])
         ob = bpy.data.objects.new('TEMP lighting atlas',mesh); scene.collection.objects.link(ob); mesh.materials.append(mat)
@@ -229,7 +238,7 @@ def combine_saved_controls(context, size, path):
     return array
 
 
-def export_compensated(context, objects, marker, source, directory):
+def export_compensated(context, objects, marker, source, directory, colour_adjustment=None):
     import bpy, PyOpenColorIO as ocio
     directory=Path(directory);directory.mkdir(parents=True,exist_ok=True)
     if Path(str(source)+'.agx.json').is_file():
@@ -247,7 +256,7 @@ def export_compensated(context, objects, marker, source, directory):
     root=bpy.data.objects.get(marker)
     if root is None: raise ValueError('Lightmap marker missing in Blender')
     receivers=[o for o in objects if o.type=='MESH' and o in root.children_recursive]
-    colour=bake_albedo(context,receivers,directory/'albedo_uv.exr',w)
+    colour=bake_albedo(context,receivers,directory/'albedo_uv.exr',w,colour_adjustment=colour_adjustment)
     mask=colour[...,3]>.5
     config_path=Path(bpy.utils.resource_path('LOCAL'))/'datafiles/colormanagement/config.ocio'
     cfg=ocio.Config.CreateFromFile(str(config_path))

@@ -13,7 +13,7 @@ from reuse import reuse_plan, load_labels
 
 HERE = Path(__file__).resolve().parent
 LIGHTMAP = HERE.parent / 'lightmap_tools'
-STAGES = ['preflight', 'bake', 'ownership', 'process', 'combine', 'capture', 'env', 'thumbnail', 'snapshot', 'validate']
+STAGES = ['preflight', 'geometry', 'bake', 'ownership', 'process', 'ao', 'combine', 'capture', 'env', 'thumbnail', 'snapshot', 'validate']
 
 
 def main():
@@ -29,15 +29,26 @@ def main():
     p.add_argument('--recombine', action='store_true', help='With reuse, evaluate saved controls before later stages; implicit for combine')
     p.add_argument('--ownership-labels', type=Path, help='Matching zero-margin labels.npy or lossless labels.npz (labels array)')
     p.add_argument('--island-catalogue', type=Path, help='Matching bake islands.json, checked against current receivers')
+    p.add_argument('--geometry-reference', type=Path, help='Original bake geometry/result.json; required for AO-only reuse')
+    p.add_argument('--rebake-ao', action='store_true', help='Regenerate only AO while reusing D/I; implicit for the ao command')
     p.add_argument('--env-converter',type=Path,help='Optional maintained Node convert.cjs; enables ENV conversion')
     a = p.parse_args(); c = load_config(a.config); root = a.output.resolve()
-    recombine, reused_names = reuse_plan(a.command, a.reuse_lightmaps, a.recombine,
+    ao_enabled=c.get('ao',{}).get('enabled',False)
+    rebake_ao=a.rebake_ao or a.command=='ao'
+    if rebake_ao and not ao_enabled:raise ValueError('AO regeneration requires an enabled AO recipe')
+    if a.command=='ao' and not ao_enabled:raise ValueError('Enable and configure AO in the recipe first')
+    if a.reuse_lightmaps and ao_enabled and a.command!='geometry' and not a.geometry_reference:
+        raise ValueError('AO reuse requires --geometry-reference from the original bake scene')
+    recombine, reused_names = reuse_plan('combine' if a.command=='ao' else a.command, a.reuse_lightmaps, a.recombine,
                                         a.ownership_labels, a.island_catalogue)
+    if a.reuse_lightmaps and ao_enabled and not rebake_ao:reused_names+=('ao',)
+    if a.reuse_lightmaps and rebake_ao and a.command!='ao' and not recombine:
+        raise ValueError('Regenerated AO requires --recombine before capture/export')
     source_root = Path(c['_root'])
     if root == source_root or source_root in root.parents:
         raise ValueError('Candidate output must be outside the source environment folder')
     inputs = {str(a.config.resolve()): sha(a.config), c['_source']: sha(c['_source'])}
-    dependencies=[HERE.parent/name for name in ('environment_controls.py','env_export.py','lighting_controls.py','agx_lightmap.py')]
+    dependencies=[HERE.parent/name for name in ('environment_controls.py','env_export.py','lighting_controls.py','lightmap_grading.py','agx_lightmap.py')]
     for f in sorted(HERE.glob('*.py')) + sorted(LIGHTMAP.glob('*.py')) + dependencies:
         inputs[str(f)] = sha(f)
     for im in c.get('source_images', []):
@@ -45,7 +56,9 @@ def main():
     inputs[str(a.oidn_library.resolve())] = sha(a.oidn_library)
     inputs['reuse_lightmaps']=a.reuse_lightmaps
     inputs['recombine']=recombine
+    inputs['rebake_ao']=rebake_ao
     inputs['env_converter']=str(a.env_converter.resolve()) if a.env_converter else None
+    if a.geometry_reference:inputs[str(a.geometry_reference.resolve())]=sha(a.geometry_reference)
     if a.env_converter:inputs[str(a.env_converter.resolve())]=sha(a.env_converter)
     if a.reuse_lightmaps:
         for name in reused_names:
@@ -107,13 +120,15 @@ def main():
         shutil.copyfile(path.with_suffix('.exr'),root/'masters'/(name+'.exr'))
 
     requested=STAGES if a.command=='restore' else STAGES[:STAGES.index(a.command)+1]
+    if not ao_enabled:requested=[x for x in requested if x!='ao']
     if not a.env_converter:
         if a.command=='env':raise ValueError('env requires --env-converter')
         requested=[x for x in requested if x!='env']
     if a.reuse_lightmaps:
         skipped=('bake','ownership','process') if recombine else ('bake','ownership','process','combine')
         requested=[x for x in requested if x not in skipped]
-        for name,filename in [('direct','direct_final.exr'),('indirect','indirect_final.exr'),('island_ids','island_ids.exr'),('combined','combined.exr')]:
+        if not rebake_ao:requested=[x for x in requested if x!='ao']
+        for name,filename in [('direct','direct_final.exr'),('indirect','indirect_final.exr'),('island_ids','island_ids.exr'),('combined','combined.exr'),('ao','ao.exr')]:
             if name in reused_names:shutil.copyfile(source_root/c['images'][name],root/'masters'/filename)
         if recombine:
             reuse_dir=root/'reuse';reuse_dir.mkdir(exist_ok=True)
@@ -137,7 +152,12 @@ def main():
         if name=='preflight' and not a.reuse_lightmaps:
             run([sys.executable,LIGHTMAP/'cli.py','check','--oidn-library',a.oidn_library,
                  '--image-python',a.image_python,'--diagnostics'],stage/'dependencies.log')
-        if name in ('preflight','reuse-check','bake','combine','capture','env','thumbnail','snapshot'): worker(name,stage)
+        if name in ('preflight','geometry','reuse-check','bake','ao','combine','capture','env','thumbnail','snapshot'): worker(name,stage)
+        if name=='geometry' and a.geometry_reference:
+            original=json.loads(a.geometry_reference.read_text())
+            current=json.loads((stage/'result.json').read_text())
+            if original.get('schema_version')!=1 or original.get('geometry_sha256')!=current['geometry_sha256']:
+                raise ValueError('Geometry, transforms, UVs, normals or AO blocker participation changed; do not reuse the old bake')
         if name=='reuse-check':
             import numpy as np
             from reuse import validate_ownership
@@ -190,10 +210,22 @@ def main():
             record.update(combined_sha256=sha(root/'masters/combined.exr'),source_sha256=sha(c['_source']),
                           ownership_sha256=sha(labels_path))
             save_json(root/'masters/combined.provenance.json',record)
+        if name=='ao':
+            import numpy as np
+            from ownership import dilate
+            from reuse import validate_ownership
+            labels_path=root/('reuse' if a.reuse_lightmaps else 'ownership')/'labels.npy'
+            labels=np.load(labels_path,allow_pickle=False);raw=np.load(stage/'ao_raw.npy',allow_pickle=False)
+            catalogue=json.loads((stage/'islands.json').read_text())
+            saved=json.loads((root/('reuse' if a.reuse_lightmaps else 'bake')/'islands.json').read_text())
+            validate_ownership(labels,saved,catalogue,c['size'])
+            if not np.array_equal(raw[:,:,3]>0,labels>0):raise ValueError('AO coverage differs from lighting ownership')
+            raw[:,:,:3]=np.clip(raw[:,:,:3],0.,1.)
+            exr(dilate(raw,labels),'ao',stage)
         if name=='validate':
             worker('validate',stage)
             for f,digest in inputs.items():
-                if f in ('reuse_lightmaps','recombine','env_converter'):continue
+                if f in ('reuse_lightmaps','recombine','rebake_ao','env_converter'):continue
                 if sha(f)!=digest:raise ValueError('Source/tool changed during build: '+f)
         outputs={str(f.relative_to(root)):sha(f) for f in stage.rglob('*') if f.is_file()}
         if name=='bake':
@@ -202,10 +234,11 @@ def main():
             for f in ('direct_final.exr','indirect_final.exr','island_ids.exr'): outputs['masters/'+f]=sha(root/'masters'/f)
         if name=='combine':
             for f in ('combined.exr','combined.provenance.json'):outputs['masters/'+f]=sha(root/'masters'/f)
+        if name=='ao':outputs['masters/ao.exr']=sha(root/'masters/ao.exr')
         manifest['stages'][name]={'seconds':time.time()-started,'outputs':outputs}
         save_json(manifest_path,manifest);print('Completed '+name,flush=True)
     for f,digest in inputs.items():
-        if f not in ('reuse_lightmaps','recombine','env_converter') and sha(f)!=digest:
+        if f not in ('reuse_lightmaps','recombine','rebake_ao','env_converter') and sha(f)!=digest:
             raise ValueError('Source/tool changed during build: '+f)
     save_json(root/'progress.json',{'stage':requested[-1],'status':'completed','accepted':False})
     print('Candidate ready: '+str(root)+'; inspect it before replacing accepted assets.',flush=True)

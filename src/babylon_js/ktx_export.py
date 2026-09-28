@@ -224,6 +224,17 @@ def _check_texture_collisions(exporter):
 
 
 def make_config(raw_model, work, options, context=None, objects=()):
+    import bpy
+    before=set(bpy.data.images)
+    try:
+        return _make_config(raw_model,work,options,context,objects)
+    finally:
+        for image in list(bpy.data.images):
+            if image not in before and image.get('bjs_export_colour_temporary'):
+                bpy.data.images.remove(image)
+
+
+def _make_config(raw_model, work, options, context=None, objects=()):
     """Infer safe material defaults; lightmap input is explicit, never guessed from names."""
     import bpy
     model = core.read_json(raw_model)
@@ -255,6 +266,11 @@ def make_config(raw_model, work, options, context=None, objects=()):
         specs.append(dict(source=str(source), output=Path(reference).stem + '.ktx2', references=[reference],
                           flip_y=options.get('flip_y', True), color_space=policy[0], codec=policy[1], mipmaps=policy[2],
                           alpha='preserve' if texture.get('hasAlpha', False) else 'discard'))
+    from . import colour_adjustment as ca
+    adjustment=ca.resolve(context.scene,options) if context else None
+    if adjustment:
+        prepared=ca.prepare_image(adjustment['image'],work/'colour_adjustment.png',int(options.get('colour_adjustment_size',512)))
+        adjustment=dict(adjustment,image=prepared)
     lightmap = options.get('lightmap', '')
     if not lightmap and options.get('auto_lightmap', True) and context:
         exported_names = {n['name'] for collection in ('meshes','transformNodes') for n in model.get(collection, [])}
@@ -285,13 +301,24 @@ def make_config(raw_model, work, options, context=None, objects=()):
             if not rgbd:
                 raise ValueError('AgX lightmap compensation requires RGBD encoding; disable it for unchanged legacy exports')
             from .agx_lightmap import export_compensated
-            source, report = export_compensated(context, objects, marker, source, work / 'agx')
+            source, report = export_compensated(context, objects, marker, source, work / 'agx',colour_adjustment=adjustment)
             options['agx_report'] = report
         output = core.lightmap_output_name(source.stem + ('_rgbd' if rgbd else '') + '.ktx2')
         specs.append(dict(source=str(source), output=output, lightmap_markers=[marker], encoding=encoding,
                           size=core.lightmap_size(options.get('lightmap_size', 0)),
                           flip_y=options.get('flip_y', True), color_space='linear' if rgbd else 'srgb',
                           codec='uastc', mipmaps=False, alpha='preserve' if rgbd else 'discard'))
+    if adjustment:
+        if not lightmap: raise ValueError('Colour adjustment requires an exported UV2 lightmap marker')
+        reference='colour_adjustment_source.png'
+        output=raw_model.stem+'_colour_adjustment.ktx2'
+        for collection in ('meshes','transformNodes'):
+            for node in model.get(collection,[]):
+                if node.get('name')==marker:
+                    node.setdefault('metadata',{})['kadshowColourAdjustment']=dict(version=1,texture=reference,coordinatesIndex=1,encoding=ca.ENCODING,strength=adjustment['strength'])
+        raw_model.write_text(json.dumps(model,ensure_ascii=False),encoding='utf8')
+        specs.append(dict(source=str(work/'colour_adjustment.png'),output=output,references=[reference],flip_y=options.get('flip_y',True),color_space='srgb',codec=options.get('codec','basis-lz'),mipmaps=False,alpha='preserve'))
+        bpy.data.images.remove(prepared)
     return dict(version=1, output_dir=str(work / 'converted'),
                 models=[dict(source=str(raw_model), output=raw_model.name)], textures=specs)
 
@@ -337,6 +364,8 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
     work = None
     try:
         convert_materials = options.get('convert_materials', True)
+        if options.get('colour_adjustment_enabled') and not convert_materials:
+            raise ValueError('Colour adjustment requires KTX2 conversion')
         tool, message = '', 'Material conversion disabled'
         if convert_materials:
             tool, message = find_ktx(options.get('executable', ''))

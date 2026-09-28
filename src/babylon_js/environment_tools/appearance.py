@@ -26,6 +26,8 @@ def preview_identity(material, *, diagnostic=False):
         if tree.as_pointer() in ancestors:raise ValueError('Recursive preview graph')
         rows=[]
         for n in sorted(tree.nodes,key=lambda n:n.name):
+            if n.type in ('SCRIPT','TEX_IES','TEX_POINTDENSITY'):
+                raise ValueError('External shader state is not supported by preview provenance: '+n.name)
             if n.type=='GROUP_INPUT' and any(s.name in RUNTIME and s.is_linked for s in n.outputs):
                 raise ValueError('Runtime metadata controls must not drive the preview shader')
             props={}
@@ -39,11 +41,32 @@ def preview_identity(material, *, diagnostic=False):
                     continue
                 if hasattr(s,'default_value') and not s.is_linked:inputs[str(i)]=value(s.default_value)
             row={'name':n.name,'type':n.bl_idname,'properties':props,'inputs':inputs}
+            if hasattr(n, 'mapping'):
+                mapping=n.mapping
+                if not isinstance(mapping,bpy.types.CurveMapping):
+                    raise ValueError('Unsupported appearance mapping: '+n.name)
+                settings={}
+                for p in mapping.bl_rna.properties:
+                    if p.identifier=='rna_type' or p.type not in ('BOOLEAN','INT','FLOAT','STRING','ENUM'):continue
+                    settings[p.identifier]=value(getattr(mapping,p.identifier))
+                row['curve_mapping']={'settings':settings,'curves':[
+                    [{'location':list(point.location),'handle_type':point.handle_type} for point in curve.points]
+                    for curve in mapping.curves]}
+            if hasattr(n,'color_ramp'):
+                ramp=n.color_ramp
+                row['color_ramp']={'interpolation':ramp.interpolation,'color_mode':ramp.color_mode,
+                    'hue_interpolation':ramp.hue_interpolation,
+                    'elements':[{'position':e.position,'color':list(e.color)} for e in ramp.elements]}
             if n.type in ('RGB','VALUE'):
                 row['outputs']=[value(s.default_value) for s in n.outputs]
             if n.type=='GROUP':row['tree']=tree_data(n.node_tree,ancestors+(tree.as_pointer(),))
             if n.type=='TEX_IMAGE':
                 im=n.image
+                if im is None and n.get('bjs_preview_image_role')=='ao':
+                    available=[x for x in tree.nodes if x.get('bjs_ao_available')]
+                    if len(available)!=1 or available[0].outputs[0].default_value!=0:
+                        raise ValueError('Active AO has no image')
+                    row['image']=None;rows.append(row);continue
                 if im is None or im.source!='FILE' or im.packed_file or im.is_dirty:
                     raise ValueError('Preview provenance requires saved, freshly loaded external images: '+n.name)
                 path=Path(bpy.path.abspath(im.filepath)).resolve()

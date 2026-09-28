@@ -41,9 +41,16 @@ def load_config(path):
     c.setdefault('samples', {'DIRECT': 128, 'INDIRECT': 2048})
     if any(not isinstance(c['samples'].get(p), int) or c['samples'][p] < 1 for p in ('DIRECT', 'INDIRECT')):
         raise ValueError('Positive DIRECT and INDIRECT sample counts are required')
-    if c.get('quality', 'final') == 'final' and c['samples']['INDIRECT'] < 2048:
-        raise ValueError('Final indirect bake requires at least 2048 samples; label cheaper work preview')
+    if c.get('quality', 'final') == 'final' and c['samples']['INDIRECT'] != 2048:
+        raise ValueError('Final indirect bake requires exactly 2048 fixed samples; label experiments preview')
     if not 0 <= c.get('metallic_cap', .8) <= 1: raise ValueError('Invalid receiving metallic cap')
     for key in ('direct', 'indirect', 'island_ids', 'combined', 'colour'):
         if key not in c.get('images', {}): raise ValueError('Missing image binding: ' + key)
+    if c.get('ao',{}).get('enabled',False):
+        ao=c['ao']
+        if not isinstance(ao.get('distance'),(int,float)) or not 0<ao['distance']<10000:
+            raise ValueError('AO requires an explicit positive distance in scene units')
+        for key in ('samples','node_samples'):
+            if not isinstance(ao.get(key),int) or not 1<=ao[key]<=4096:raise ValueError('AO requires explicit positive '+key)
+        if 'ao' not in c['images']:raise ValueError('Missing image binding: ao')
     return c

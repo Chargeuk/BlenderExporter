@@ -50,6 +50,11 @@ def relink(c, root):
         if im.source == 'FILE' and im.filepath:
             target = replacements.get(Path(bpy.path.abspath(im.filepath)).resolve())
             if target and target.is_file(): replace_from_disk(im,target)
+    if c.get('ao',{}).get('enabled') and (root/'masters/ao.exr').is_file():
+        from babylon_js.lightmap_grading import upgrade
+        image=bpy.data.images.load(str(root/'masters/ao.exr'),check_existing=True)
+        image.colorspace_settings.name='Non-Color'
+        upgrade(bpy.data.materials[c['preview_material']],image,c.get('uv','SimpleBake'))
 
 
 def write_exr(path, array):
@@ -115,6 +120,7 @@ def preflight(c):
                     raise ValueError('Physical bake requires a Principled source material: '+mat.name)
         finally:o.evaluated_get(bpy.context.evaluated_depsgraph_get()).to_mesh_clear()
     generated={binding(c,k) for k in ('direct','indirect','island_ids','combined')}
+    if c.get('ao',{}).get('enabled'):generated.update((binding(c,'ao'),Path(c['_candidate'])/'masters/ao.exr'))
     declared={(Path(c['_root'])/p).resolve() for p in c.get('source_images',[])}
     declared.update((Path(c['_root'])/p['path']).resolve() for p in c.get('downloads',[]))
     root=Path(c['_candidate'])
@@ -133,6 +139,11 @@ def preflight(c):
     if not output.inputs['Surface'].links or output.inputs['Surface'].links[0].from_socket!=node.outputs['Lighting']:
         raise ValueError('Physical baking requires the World Lighting output')
     if c.get('preview_material') not in bpy.data.materials:raise ValueError('Missing configured preview material')
+    if c.get('ao',{}).get('enabled'):
+        from babylon_js.lightmap_grading import upgrade
+        # Fail before an expensive bake if an old/custom preview cannot be migrated.
+        # This worker is disposable; the saved authoring scene is never changed.
+        upgrade(bpy.data.materials[c['preview_material']],uv=c.get('uv','SimpleBake'))
     resolution=check_preview_resolution(c)
     return {'receiver_count':len(receivers),'triangles':triangles,'receivers':[o.name for o in receivers],
         'contributors':[o.name for o in contributors],'visible_only_emitters':[o.name for o in emitters],'excluded_glass':[o.name for o in select(c,'glass')],
@@ -264,8 +275,19 @@ def clone_tree(tree):
 
 def flatten(c,root,stage):
     check_preview_resolution(c)
-    s=setup(c);original=bpy.data.materials[c['preview_material']];mat=original.copy()
+    original=bpy.data.materials[c['preview_material']]
     save_json(stage/'appearance.json',{'schema_version':1,'preview_sha256':preview_identity(original)})
+    def tagged(tree):
+        return any(n.get('bjs_preview_image_role')=='colour' or
+                   (n.type=='GROUP' and tagged(n.node_tree)) for n in tree.nodes)
+    if tagged(original.node_tree):
+        # Share the deterministic CPU evaluator with AgX export. GPU texture
+        # interpolation can differ at sharp atlas transitions even on identical nodes.
+        from babylon_js.agx_lightmap import combine_saved_controls
+        result=combine_saved_controls(bpy.context,c['size'],stage/'evaluated.exr',material=original)
+        np.save(stage/'evaluated.npy',result)
+        return {'method':'shared export/combination CPU EMIT evaluator','samples':1}
+    s=setup(c);mat=original.copy()
     for n in mat.node_tree.nodes:
         if n.type=='GROUP':n.node_tree=clone_tree(n.node_tree)
     count=0
@@ -367,6 +389,12 @@ def main():
     if Path(bpy.data.filepath).resolve()!=Path(c['_source']):raise ValueError('Wrong source scene opened')
     source_hash=sha(c['_source']);relink(c,root)
     if command=='preflight':result=preflight(c)
+    elif command=='geometry':
+        from ao import geometry_identity
+        result=geometry_identity(c)
+    elif command=='ao':
+        from ao import bake as bake_ao
+        result=bake_ao(c,root,stage)
     elif command=='reuse-check':result=reuse_check(c,root)
     elif command=='bake':result=bake(c,root,stage)
     elif command=='combine':result=flatten(c,root,stage)
@@ -388,10 +416,15 @@ def main():
     elif command=='validate':
         import OpenImageIO as oiio
         rows=[]
-        for filename in ('direct_final.exr','indirect_final.exr','island_ids.exr','combined.exr'):
+        files=('direct_final.exr','indirect_final.exr','island_ids.exr','combined.exr')
+        if c.get('ao',{}).get('enabled'):files+=('ao.exr',)
+        for filename in files:
             pixels=oiio.ImageBuf(str(root/'masters'/filename)).get_pixels(oiio.FLOAT)
             if pixels is None or pixels.shape!=(c['size'],c['size'],4) or not np.isfinite(pixels).all():
                 raise ValueError('Invalid regenerated image: '+filename)
+            if filename=='ao.exr' and (pixels[:,:,:3].min()<0 or pixels[:,:,:3].max()>1
+                    or not np.array_equal(pixels[:,:,0],pixels[:,:,1]) or not np.array_equal(pixels[:,:,0],pixels[:,:,2])):
+                raise ValueError('AO must be identical RGB scalar channels in [0,1]')
             rows.append({'file':filename,'shape':list(pixels.shape),'minimum':float(pixels.min()),'maximum':float(pixels.max())})
         result={'images':rows,'quality':c.get('quality','final'),'accepted':False,
                 'note':'Regenerated candidates; visual review is required before promotion.'}

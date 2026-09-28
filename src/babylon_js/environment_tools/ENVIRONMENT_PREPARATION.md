@@ -121,7 +121,7 @@ materials only; it is not a scene-wide material edit. UVs must fit the square at
 without overlapping chart interiors. Charts too small to own pixels are reported;
 the runner cannot invent lighting for them. Review and enlarge significant ones.
 
-Final indirect baking requires at least **2048 samples**. Cheaper trials must say
+Final indirect baking requires exactly **2048 fixed samples**. Cheaper trials must say
 `quality: preview`. DIRECT and INDIRECT sampling are independently configurable.
 The existing accepted example uses DIRECT128/INDIRECT2048, not 2048 direct samples.
 Original baked pixels are never replaced by padding pixels during processing.
@@ -202,3 +202,15 @@ For lighting variants, use separate saved scenes/configurations, map paths, prov
 Every physical bake also prepares albedo in UV2. It is an intermediate source, not
 an extra runtime texture. Export refreshes it from current materials before optional
 [AgX compensation](../AGX_LIGHTMAP.md). Physical masters and room HDR captures remain linear.
+
+## AO and geometry correspondence (3.3.17)
+
+New recipes enable `ao` with explicit `distance` (scene units), `samples` and `node_samples`, plus `images.ao`. The example's 0.5 / 128 / 64 is a tested pub starting point, not a universal quality requirement. Older recipes without AO remain unchanged. Final INDIRECT still uses 2048 fixed samples.
+
+`geometry` records evaluated receiver/contributor geometry, world transforms, corner normals, receiving UVs, atlas size and participation. Full builds record it before lighting. Preserve `geometry/result.json` with the bake. For existing masters, generate this record from their verified original saved physical scene; comparing a candidate to its own newly minted record proves nothing about old maps.
+
+`ao --reuse-lightmaps --ownership-labels LABELS --island-catalogue ISLANDS --geometry-reference ORIGINAL_GEOMETRY` bakes AO without rebaking valid D/I. Use the usual config/output/runtime arguments. The AO command stops after `masters/ao.exr`; it does not recombine or capture. To rebuild AO and continue through capture/restore, add `--rebake-ao --recombine` with the same reuse inputs. For grade-only work, ordinary reuse copies configured AO unchanged and skips the AO stage. AO-enabled reuse requires the matching geometry reference. Geometry checks do not certify unchanged physical material/light transport; retain the original lighting provenance too.
+
+AO bakes the scalar AO shader through EMIT, with declared neighbours/self occlusion and matching evaluated UVs/normals. It uses a zeroed float target and `use_clear=False` to preserve real coverage, then verifies original ownership and performs ordinary final dilation. No radiance denoiser is applied. `masters/ao.exr` is scene-linear scalar [0,1]. Binding to the preview preserves AO strength/grade controls. The source files/live scene remain unchanged.
+
+New previews include [editable grading](../LIGHTMAP_GRADING.md). AO/grade/curve edits change appearance provenance; current combination is required for baked capture/thumbnail. The linear capture never uses AgX-compensated runtime pixels. AO remains an authoring asset, not an extra runtime texture.

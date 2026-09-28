@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 16),
+    'version': (3, 3, 18),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -199,9 +199,15 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         name='ENV highlight threshold',default=1,min=.001,max=10000,
         description='Linear luminance where gain starts; reaches full strength at twice this threshold')
 
+    colour_adjustment_enabled: bpy.props.BoolProperty(name='Export colour adjustment',default=False)
+    colour_adjustment_strength: bpy.props.FloatProperty(name='Colour adjustment strength',default=1,min=0,max=1)
+    colour_adjustment_size: bpy.props.EnumProperty(name='Colour adjustment size',items=(('512','512',''),('1024','1024','')),default='512')
+
     def invoke(self, context, event):
+        from .colour_adjustment import prefill
         from .lighting_profile import prefill_lighting_options
         try:
+            prefill(self, context)
             prefill_lighting_options(self, context)
         except (ValueError, TypeError) as exc:
             self.report({'ERROR'}, str(exc))
@@ -216,6 +222,9 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             self.report({'ERROR'}, 'version of Blender too old.')
             return {'CANCELLED'}
 
+        if self.colour_adjustment_enabled and not self.convert_to_ktx2:
+            self.report({'ERROR'},'Colour adjustment requires KTX2 conversion')
+            return {'CANCELLED'}
         exporter = JsonExporter()
         objects = bpy.context.selected_objects if self.export_selected else bpy.context.scene.objects
         options = None
@@ -225,7 +234,10 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                            lightmap=self.ktx_lightmap, lightmap_marker=self.ktx_lightmap_marker,
                            auto_lightmap=self.ktx_auto_lightmap, lightmap_encoding=self.ktx_lightmap_encoding,
                            lightmap_size=int(self.ktx_lightmap_size), lightmap_agx=self.ktx_lightmap_agx,
-                           convert_materials=self.convert_to_ktx2)
+                           convert_materials=self.convert_to_ktx2,
+                           colour_adjustment_enabled=self.colour_adjustment_enabled,
+                           colour_adjustment_strength=self.colour_adjustment_strength,
+                           colour_adjustment_size=int(self.colour_adjustment_size))
             if self.export_skybox:
                 options['skybox'] = dict(executable=self.basis_executable, image=self.skybox_image,
                     world_controls=self.skybox_world_controls, world_rotation_offset=self.skybox_world_rotation_offset,
@@ -299,6 +311,10 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             options.prop(self, 'ktx_lightmap_encoding')
             options.prop(self, 'ktx_lightmap_size')
             options.prop(self, 'ktx_lightmap_agx')
+            options.prop(self, 'colour_adjustment_enabled')
+            if self.colour_adjustment_enabled:
+                options.prop(self, 'colour_adjustment_strength')
+                options.prop(self, 'colour_adjustment_size')
             if self.ktx_auto_lightmap and not self.ktx_lightmap:
                 from .ktx_export import infer_lightmap
                 objects = context.selected_objects if self.export_selected else context.scene.objects
@@ -352,7 +368,12 @@ from . import materials # directory
 from . import world # must be defined before mesh
 from . import mesh
 from . import environment_controls
+from .lightmap_grading import BJS_OT_lightmap_grading
+from .colour_adjustment import BJS_OT_colour_adjustment, BJS_OT_tint_selected
+
 classes = (
+    BJS_OT_colour_adjustment, BJS_OT_tint_selected,
+    BJS_OT_lightmap_grading,
     # Operator sub-classes
     BabylonExportPreferences,
     JsonMain,

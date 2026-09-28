@@ -92,3 +92,11 @@ Custom/untagged graphs return `unverified_custom_graph` and need manual source-o
 See [AgX lightmap export](AGX_LIGHTMAP.md) for default-on compensation and colour
 reprojection. Add missing runtime sockets with `upgrade_runtime_controls(material)`
 without rebuilding the saved shader or resetting existing values.
+
+## AO and grading
+
+New previews include [AO and editable grading](../src/babylon_js/LIGHTMAP_GRADING.md). Existing recognized groups can be upgraded explicitly without resetting their values. Adjustment Strength and AO Strength start at zero. Direct/Indirect/Final grades provide exposure, signed-safe luminance contrast/pivot, tint, saturation, optional curves and advanced levels/gamma. Curve/ramp edits are part of provenance. AO must match source lighting dimensions; no extra runtime texture is exported.
+
+## Optional colour adjustment
+
+See [UV2 colour adjustment](../src/babylon_js/COLOUR_ADJUSTMENT.md) for the optional 512/1024 RGBA finishing map, authoring tools and export settings. Alpha controls influence, not transparency. Re-export after tint changes to regenerate matching AgX compensation.
