@@ -1,7 +1,7 @@
 """Process decoded, zero-margin scene-linear RGBA + UV island labels.
 
 Creates a fresh candidate directory; never edits Blender or promotes acceptance.
-Supported entry point: cli.py process. See LIGHTMAP_PROCESSING.md beside it.
+Supported entry point: cli.py process. See the kadshow-blender-environments Codex skill.
 """
 import argparse
 import hashlib

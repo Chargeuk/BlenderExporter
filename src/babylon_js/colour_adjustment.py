@@ -1,7 +1,7 @@
 """Optional UV2 colour finishing layer. RGB=sRGB(linear multiplier/2), A=influence.
 
 This layer changes albedo, never transparency or the physical lighting master.
-See COLOUR_ADJUSTMENT.md for authoring, export and rebake boundaries.
+See the kadshow-environment-refinement Codex skill for authoring, export and rebake boundaries.
 """
 from pathlib import Path
 import math

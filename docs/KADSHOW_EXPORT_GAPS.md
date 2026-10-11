@@ -16,19 +16,19 @@ are relative to `fe/client/src`; historical source line numbers are not an API.
 
 ## Implemented preparation and conversion
 
-- [Saved-scene preparation](ENVIRONMENT_PREPARATION.md): explicit roles, physical
+- Saved-scene preparation (see the `kadshow-blender-environments` Codex skill): explicit roles, physical
   baking, original ownership, isolated processing, combination, HDR capture and
   thumbnails. The source remains editable and unchanged on disk.
-- [Lighting preview](LIGHTING_CONTROLS.md): native saved adjustment graph,
+- Lighting preview (see the `blender-texture-authoring` Codex skill): native saved adjustment graph,
   same-island smoothing and combination/capture freshness checks.
-- [KTX2/RGBD](KTX2_EXPORT.md): source-preserving conversion, filename updates and
+- KTX2/RGBD (see the `kadshow-environment-export` Codex skill): source-preserving conversion, filename updates and
   explicit HDR encoding with a compatible client.
-- [Basis skybox](SKYBOX_EXPORT.md): managed visible-sky evaluation and cubemap
+- Basis skybox (see the `kadshow-environment-export` Codex skill): managed visible-sky evaluation and cubemap
   conversion, with rotation applied once.
-- [Room ENV](ENV_EXPORT.md): conversion of an explicitly prepared room panorama.
-- [Runtime lighting profile](LIGHTING_PROFILE.md) and [material multipliers](MATERIAL_EXPORT.md):
+- Room ENV (see the `kadshow-environment-export` Codex skill): conversion of an explicitly prepared room panorama.
+- Runtime lighting profile (see the `kadshow-environment-export` Codex skill) and material multipliers (see the `blender-texture-authoring` Codex skill):
   editable export values with preserved source materials.
-- [Geometry export](GEOMETRY_EXPORT.md): omit tangents for KaDshow; retain normals
+- Geometry export (see the `kadshow-environment-export` Codex skill): omit tangents for KaDshow; retain normals
   and required UV channels.
 
 ## Explicit boundaries

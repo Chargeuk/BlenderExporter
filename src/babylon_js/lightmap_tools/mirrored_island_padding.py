@@ -1,6 +1,6 @@
 """Tested per-island reflection indices. Input: nonempty 2D bool mask.
 Returns (source_y, source_x, counts); no denoising, file writes or Blender edits.
-See LIGHTMAP_PROCESSING.md beside this module for the processing contract.
+See the kadshow-blender-environments Codex skill for the processing contract.
 """
 import numpy as np
 from scipy.ndimage import distance_transform_edt

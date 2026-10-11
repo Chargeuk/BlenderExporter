@@ -28,8 +28,8 @@ physical PBR source materials; an emission preview is unsuitable as the physical
 export source. Include explicit delivery/helper/ancestor selection and
 six-decimal geometry/UV precision.
 
-See [preparation](ENVIRONMENT_PREPARATION.md), [RGBD/KTX2](KTX2_EXPORT.md),
-[lighting](LIGHTING_PROFILE.md), [geometry](GEOMETRY_EXPORT.md),
-[skybox](SKYBOX_EXPORT.md) and [ENV](ENV_EXPORT.md) for current settings.
+See preparation (see the `kadshow-blender-environments` Codex skill), RGBD/KTX2 (see the `kadshow-environment-export` Codex skill),
+lighting (see the `kadshow-environment-export` Codex skill), geometry (see the `kadshow-environment-export` Codex skill),
+skybox (see the `kadshow-environment-export` Codex skill) and ENV (see the `kadshow-environment-export` Codex skill) for current settings.
 `tests/test_blender_compat.py` remains an independent compatibility fixture.
 Historical bedroom experiment scripts are not current production recipes.

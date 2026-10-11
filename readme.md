@@ -2,22 +2,24 @@
 
 ## Chargeuk fork: Blender 5.2, KTX2 and Basis skybox export
 
-Version 3.3.14 adds [saved-scene preparation](docs/ENVIRONMENT_PREPARATION.md): role-based Cycles baking, preserved UV ownership, isolated processing, native lighting combination, verified capture freshness, thumbnails and resumable restoration. Its [preview initializer](docs/LIGHTING_CONTROLS.md) creates the standard adjustable graph; disk-image replacement handles packed and nested samplers.
+Version 3.3.19 packages the reusable Python workflow helpers in `babylon_js/workflow_tools`. Their usage instructions are maintained in the corresponding Codex skills.
 
-Version3.3.13 packages the [shared lightmap processor](docs/LIGHTMAP_PROCESSING.md), with an independent CLI and dependency checks. Environment projects keep their settings and recipes, not script copies.
+Version 3.3.14 adds saved-scene preparation (see the `kadshow-blender-environments` Codex skill): role-based Cycles baking, preserved UV ownership, isolated processing, native lighting combination, verified capture freshness, thumbnails and resumable restoration. Its preview initializer (see the `blender-texture-authoring` Codex skill) creates the standard adjustable graph; disk-image replacement handles packed and nested samplers.
 
-Version3.3.12 adds native [World environment controls](docs/ENVIRONMENT_CONTROLS.md): one original HDRI, separate lighting/visible-sky brightness, and temporary skybox preparation.
+Version3.3.13 packages the shared lightmap processor (see the `kadshow-blender-environments` Codex skill), with an independent CLI and dependency checks. Environment projects keep their settings and recipes, not script copies.
 
-Version3.3.11 adds a persistent [Export Tangents switch](docs/GEOMETRY_EXPORT.md). Disable it for KaDshow environments to reduce file size and keep merge-compatible vertex layouts.
+Version3.3.12 adds native World environment controls (see the `kadshow-hdr-environment` Codex skill): one original HDRI, separate lighting/visible-sky brightness, and temporary skybox preparation.
 
-Version3.3.10 adds [lightmap export sizes](docs/LIGHTMAP_RESOLUTION.md) and [saved lighting-node dialog defaults](docs/LIGHTING_PROFILE.md). Current PBR defaults are metallic1.0 / roughness0.8.
+Version3.3.11 adds a persistent Export Tangents switch (see the `kadshow-environment-export` Codex skill). Disable it for KaDshow environments to reduce file size and keep merge-compatible vertex layouts.
+
+Version3.3.10 adds lightmap export sizes (see the `kadshow-environment-export` Codex skill) and saved lighting-node dialog defaults (see the `kadshow-environment-export` Codex skill). Current PBR defaults are metallic1.0 / roughness0.8.
 
 
-PBR export defaults are metallic **1.0** / roughness **0.8**. Editable multipliers preserve Blender source materials; see [material controls and tests](docs/MATERIAL_EXPORT.md).
+PBR export defaults are metallic **1.0** / roughness **0.8**. Editable multipliers preserve Blender source materials; see material controls and tests (see the `blender-texture-authoring` Codex skill).
 
-Version 3.3.6 adds optional **Export KaDshow environment lighting**: a saved room EXR/HDR becomes a validated `environment.env`, with selectable face size defaulting to **512**, exposure/highlight controls and a delivery-only `hasenv` marker. See [ENV setup, capture contract and tests](docs/ENV_EXPORT.md). The local converter requires Node.js, the pinned Babylon helper and Chromium; it does not start a Blender render.
+Version 3.3.6 adds optional **Export KaDshow environment lighting**: a saved room EXR/HDR becomes a validated `environment.env`, with selectable face size defaulting to **512**, exposure/highlight controls and a delivery-only `hasenv` marker. See ENV setup, capture contract and tests (see the `kadshow-environment-export` Codex skill). The local converter requires Node.js, the pinned Babylon helper and Chromium; it does not start a Blender render.
 
-Version 3.3.5 added optional **Export KaDshow skybox** with selectable square face sizes, default **1024**, panorama conversion and validated `cubemap.basis` delivery. See [skybox settings and tests](docs/SKYBOX_EXPORT.md). It requires Basis Universal and works independently or alongside **Convert textures to KTX2**, introduced in 3.3.4. See [KTX2 setup, controls and tests](docs/KTX2_EXPORT.md). All three options are off by default; material conversion requires KTX-Software 4.4.2+.
+Version 3.3.5 added optional **Export KaDshow skybox** with selectable square face sizes, default **1024**, panorama conversion and validated `cubemap.basis` delivery. See skybox settings and tests (see the `kadshow-environment-export` Codex skill). It requires Basis Universal and works independently or alongside **Convert textures to KTX2**, introduced in 3.3.4. See KTX2 setup, controls and tests (see the `kadshow-environment-export` Codex skill). All three options are off by default; material conversion requires KTX-Software 4.4.2+.
 
 The fork has been tested with Blender 5.2.2 LTS on a static KaDshow environment. See [Blender compatibility fixes](docs/BLENDER_52.md) and [the KaDshow import contract and remaining asset gaps](docs/KADSHOW_EXPORT_GAPS.md). Build the updated add-on with `python tools/package_addon.py`; the older root ZIP is historical.
 
@@ -39,4 +41,4 @@ Changelog can be [found here](https://github.com/BabylonJS/BlenderExporter/blob/
 
 ## KaDshow lighting profiles
 
-Exporter 3.3.9 writes versioned runtime lighting settings on lightmap markers, defaults to metallic/roughness multipliers 1.0/0.8, and supports an explicit Original mode for older bakes. See [lighting profile and debug controls](docs/LIGHTING_PROFILE.md).
+Exporter 3.3.9 writes versioned runtime lighting settings on lightmap markers, defaults to metallic/roughness multipliers 1.0/0.8, and supports an explicit Original mode for older bakes. See lighting profile and debug controls (see the `kadshow-environment-export` Codex skill).

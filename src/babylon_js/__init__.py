@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 18),
+    'version': (3, 3, 19),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -69,9 +69,9 @@ class BabylonExportPreferences(bpy.types.AddonPreferences):
 
     def draw(self, context):
         self.layout.prop(self, 'env_converter_script')
-        self.layout.label(text='Optional room HDR to ENV converter; see ENV_EXPORT.md')
+        self.layout.label(text='Room HDR to ENV converter: kadshow-environment-export skill')
         self.layout.label(text='Shared offline lightmap tools: lightmap_tools/cli.py')
-        self.layout.label(text='See lightmap_tools/LIGHTMAP_PROCESSING.md; requires external Python dependencies')
+        self.layout.label(text='Usage: kadshow-blender-environments skill; external Python dependencies')
 
 
 class JsonMain(bpy.types.Operator, ExportHelper):

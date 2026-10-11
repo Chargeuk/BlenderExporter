@@ -71,7 +71,7 @@ restoration does not silently repack or enlarge them.
 ## Files and next use
 
 - [Example configuration](../src/babylon_js/environment_tools/example.environment-build.json)
-- [Maintained command guide](H:/code/babylonJs/BlenderExporter/docs/ENVIRONMENT_PREPARATION.md)
+- Maintained command guide (see the `kadshow-blender-environments` Codex skill)
 - [Detailed build report](C:/Users/d_a_s/Documents/Codex/2026-09-15/do-x20/environment-restoration/candidate03/build.json)
 - [Candidate scene](C:/Users/d_a_s/Documents/Codex/2026-09-15/do-x20/environment-restoration/candidate03/snapshot/restored.blend)
 - [Candidate thumbnail](C:/Users/d_a_s/Documents/Codex/2026-09-15/do-x20/environment-restoration/candidate03/thumbnail/thumbnail.jpg)

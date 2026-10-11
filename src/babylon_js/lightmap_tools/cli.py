@@ -92,7 +92,7 @@ def main(argv=None):
         print('process requires --raw FLOAT32_RGBA_NPY --labels INTEGER_NPY --output NEW_DIRECTORY\n'
               '  --oidn-library LIBRARY --confirm-linear-zero-margin\n'
               'Optional: --catalogue JSON --image-python PYTHON --context 8 --diagnostics\n'
-              'See LIGHTMAP_PROCESSING.md for the input contract. Output directories must be new.')
+              'See the kadshow-blender-environments Codex skill for the input contract. Output directories must be new.')
         return 0
     if command == 'check':
         options = parser.parse_args(args)
