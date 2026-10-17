@@ -359,7 +359,6 @@ def _bake(c,root,stage,tint=None):
     transport_materials={obj:tuple(obj.data.materials) for obj in receivers+contributors}
     for index,o in enumerate(caps):
         im=None
-        was_hidden=o.hide_get()
         try:
             # An EMIT bake on evaluated copies leaves all transport untouched and
             # provides the local base plus native coverage, including black texels.
@@ -396,7 +395,6 @@ def _bake(c,root,stage,tint=None):
                     if preserve:row['sha256']=sha(path)
                     metadata.append(row)
         finally:
-            o.hide_set(was_hidden)
             if im is not None:bpy.data.images.remove(im)
             for obj,mesh in transport_meshes.items():
                 assert obj.data==mesh and tuple(obj.data.materials)==transport_materials[obj], 'Transport materials changed: '+obj.name
