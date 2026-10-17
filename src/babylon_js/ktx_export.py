@@ -90,7 +90,11 @@ def prepare_blender(spec, directory):
     if spec.get('encoding') == 'rgbd-v1':
         if not hdr:
             raise ValueError('RGBD lightmaps require a linear HDR/EXR source')
-        pixels, metrics = core.encode_rgbd(array[:, :, :3])
+        pixels, metrics = core.encode_rgbd(array[:, :, :3], fixed_divisor=spec.get('rgbd_fixed_divisor', False))
+        if spec.get('rgbd_region_policy'):
+            original = pixels.copy()
+            pixels, selected, region = core.encode_rgbd_regions(array[:, :, :3], original, spec['rgbd_region_policy'])
+            metrics.update(core.region_artifacts(original, selected, spec, directory, _write_png), **region)
     else:
         if hdr:
             rgb = array[:, :, :3]
@@ -223,6 +227,33 @@ def _check_texture_collisions(exporter):
             identities[key] = identity
 
 
+def normalization_marker(model, marker):
+    """Resolve exactly one selected marker; unrelated profiles stay untouched."""
+    from .agx_lightmap import normalization_profile
+    nodes = [node for collection in ('meshes', 'transformNodes')
+             for node in model.get(collection, []) if node.get('name') == marker]
+    if len(nodes) != 1 or not marker.startswith('lightmap_'):
+        raise ValueError('AgX normalization requires one exact selected lightmap marker')
+    node = nodes[0]
+    metadata = node.get('metadata', {})
+    if not isinstance(metadata, dict) or 'kadshowAgXRangeNormalization' in metadata:
+        raise ValueError('Invalid or already range-normalized lightmap marker')
+    profile = normalization_profile(metadata.get('kadshowLighting'))
+    return node, profile
+
+
+def apply_normalization_metadata(model, marker, audit):
+    from .agx_lightmap import normalization_profile, RANGE_NORMALIZATION
+    node, artist = normalization_marker(model, marker)
+    if (audit.get('version') != 1 or audit.get('option') != RANGE_NORMALIZATION or
+            audit.get('selected_marker') != marker or audit.get('artist_profile') != artist):
+        raise ValueError('AgX normalization audit does not match selected artist profile')
+    derived = normalization_profile(audit.get('serialized_profile'))
+    node.setdefault('metadata', {})['kadshowLighting'] = derived
+    # Keep audit fields outside the strict lighting-profile schema.
+    node['metadata']['kadshowAgXRangeNormalization'] = dict(audit)
+
+
 def make_config(raw_model, work, options, context=None, objects=()):
     import bpy
     before=set(bpy.data.images)
@@ -238,6 +269,13 @@ def _make_config(raw_model, work, options, context=None, objects=()):
     """Infer safe material defaults; lightmap input is explicit, never guessed from names."""
     import bpy
     model = core.read_json(raw_model)
+    normalization = options.get('lightmap_agx_range_normalization')
+    if normalization is not None:
+        from .agx_lightmap import RANGE_NORMALIZATION
+        if normalization != RANGE_NORMALIZATION:
+            raise ValueError('Unsupported AgX range normalization option')
+        if not options.get('lightmap_agx') or options.get('lightmap_encoding') != 'rgbd-v1':
+            raise ValueError('AgX range normalization requires AgX and RGBD conversion')
     specs, seen = [], {}
     for owner, key, texture, location in core.texture_fields({'materials': model.get('materials', [])}):
         if texture is None or texture.get('isCube') or 'reflectionTexture' in location or 'refractionTexture' in location:
@@ -281,6 +319,8 @@ def _make_config(raw_model, work, options, context=None, objects=()):
         if result['path']:
             lightmap = result['path']
             options['lightmap_marker'] = result['marker']
+    if normalization and not lightmap:
+        raise ValueError('AgX range normalization requires an exported lightmap')
     if lightmap:
         source = Path(bpy.path.abspath(lightmap)).resolve()
         if not source.is_file():
@@ -297,17 +337,30 @@ def _make_config(raw_model, work, options, context=None, objects=()):
         if encoding not in ('legacy', 'rgbd-v1'):
             raise ValueError('Unsupported lightmap encoding: ' + str(encoding))
         rgbd = encoding == 'rgbd-v1'
+        artist_profile = normalization_marker(model, marker)[1] if normalization else None
         if options.get('lightmap_agx', False):
             if not rgbd:
                 raise ValueError('AgX lightmap compensation requires RGBD encoding; disable it for unchanged legacy exports')
             from .agx_lightmap import export_compensated
-            source, report = export_compensated(context, objects, marker, source, work / 'agx',colour_adjustment=adjustment)
+            source, report = export_compensated(context, objects, marker, source, work / 'agx',
+                                               colour_adjustment=adjustment,
+                                               range_normalization=normalization,
+                                               artist_profile=artist_profile)
             options['agx_report'] = report
+            if normalization:
+                # Mutate this same model; the later colour-layer write must retain it.
+                apply_normalization_metadata(model, marker, report['range_normalization'])
+                raw_model.write_text(json.dumps(model, ensure_ascii=False), encoding='utf8')
         output = core.lightmap_output_name(source.stem + ('_rgbd' if rgbd else '') + '.ktx2')
         specs.append(dict(source=str(source), output=output, lightmap_markers=[marker], encoding=encoding,
                           size=core.lightmap_size(options.get('lightmap_size', 0)),
                           flip_y=options.get('flip_y', True), color_space='linear' if rgbd else 'srgb',
                           codec='uastc', mipmaps=False, alpha='preserve' if rgbd else 'discard'))
+    region_policy = options.get('lightmap_region_policy')
+    if region_policy:
+        if not lightmap or encoding != 'rgbd-v1':
+            raise ValueError('RGBD region policy requires an RGBD lightmap')
+        specs[-1]['rgbd_region_policy'] = core.load_region_policy(Path(region_policy))
     if adjustment:
         if not lightmap: raise ValueError('Colour adjustment requires an exported UV2 lightmap marker')
         reference='colour_adjustment_source.png'
@@ -317,7 +370,7 @@ def _make_config(raw_model, work, options, context=None, objects=()):
                 if node.get('name')==marker:
                     node.setdefault('metadata',{})['kadshowColourAdjustment']=dict(version=1,texture=reference,coordinatesIndex=1,encoding=ca.ENCODING,strength=adjustment['strength'])
         raw_model.write_text(json.dumps(model,ensure_ascii=False),encoding='utf8')
-        specs.append(dict(source=str(work/'colour_adjustment.png'),output=output,references=[reference],flip_y=options.get('flip_y',True),color_space='srgb',codec=options.get('codec','basis-lz'),mipmaps=False,alpha='preserve'))
+        specs.append(dict(source=str(work/'colour_adjustment.png'),output=output,references=[reference],flip_y=options.get('flip_y',True),color_space='srgb',codec=core.colour_codec(options),mipmaps=False,alpha='preserve'))
         bpy.data.images.remove(prepared)
     return dict(version=1, output_dir=str(work / 'converted'),
                 models=[dict(source=str(raw_model), output=raw_model.name)], textures=specs)
@@ -363,11 +416,23 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
     exporter.nErrors = exporter.nWarnings = 0
     work = None
     try:
+        from .environment_lighting_volume import saved_options
+        options = dict(options)
+        if 'environment_lighting_volume' not in options:
+            associated_volume = saved_options(context.scene.world)
+            if associated_volume:
+                options['environment_lighting_volume'] = associated_volume
         convert_materials = options.get('convert_materials', True)
+        if options.get('lightmap_agx_range_normalization') is not None:
+            from .agx_lightmap import RANGE_NORMALIZATION
+            if options['lightmap_agx_range_normalization'] != RANGE_NORMALIZATION:
+                raise ValueError('Unsupported AgX range normalization option')
+            if not convert_materials or not options.get('lightmap_agx') or options.get('lightmap_encoding') != 'rgbd-v1':
+                raise ValueError('AgX range normalization requires AgX and RGBD conversion')
         if options.get('colour_adjustment_enabled') and not convert_materials:
             raise ValueError('Colour adjustment requires KTX2 conversion')
         tool, message = '', 'Material conversion disabled'
-        if convert_materials:
+        if convert_materials or 'spatial_lighting' in options or options.get('environment_lighting_volume'):
             tool, message = find_ktx(options.get('executable', ''))
             if not tool:
                 raise ValueError(message)
@@ -426,6 +491,12 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
         # Keep unconverted referenced images (e.g. World HDRI) at their original
         # relative paths. Do not copy redundant source material PNGs to delivery.
         delivered = core.read_json(package / target.name)
+        spatial_report = None
+        if 'spatial_lighting' in options:
+            from .spatial_lighting import export_spatial
+            spatial_report = export_spatial(context, delivered, objects, work, package,
+                options['spatial_lighting'], tool, options.get('threads',8))
+            (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
         skybox_report = None
         if 'skybox' in options:
             from .skybox_export import export_skybox
@@ -440,6 +511,13 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
             for key in list(delivered):
                 if key.startswith('environmentTexture'):
                     del delivered[key]
+            (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
+        volume_report = None
+        if options.get('environment_lighting_volume'):
+            from .environment_lighting_volume import export_volume
+            # ENV conversion creates/retains hasenv before metadata is attached.
+            volume_report = export_volume(context, delivered, work, package,
+                options['environment_lighting_volume'], tool, options.get('threads',8), options.get('environment'))
             (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
         for owner, key, _, _ in core.texture_fields(delivered):
             reference = owner[key]
@@ -461,6 +539,10 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
         summary = dict(status='passed', ktx=message, staging=str(work), options=options,
                        material_multipliers=exporter.material_options,
                        textures=result['textures'], model=str(target), changes=result.get('changes', []))
+        if spatial_report:
+            summary['spatial_lighting'] = spatial_report
+        if volume_report:
+            summary['environment_lighting_volume'] = volume_report
         if skybox_report:
             summary['skybox'] = skybox_report
         if environment_report:

@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 19),
+    'version': (3, 3, 31),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -182,6 +182,15 @@ class JsonMain(bpy.types.Operator, ExportHelper):
     export_environment: bpy.props.BoolProperty(
         name='Export KaDshow environment lighting', default=False, update=update_environment_defaults,
         description='Convert a rendered room HDR capture to environment.env and add hasenv; does not render the room')
+    export_spatial_lighting: bpy.props.BoolProperty(
+        name='Export spatial light field', default=False,
+        description='Export a prepared relative irradiance field for opted-in lights')
+    spatial_lighting_config: bpy.props.StringProperty(
+        name='Spatial capture receipt', subtype='FILE_PATH', default='',
+        description='Version 1 receipt from the background spatial capture helper')
+    spatial_lighting_image: bpy.props.StringProperty(
+        name='Spatial master override', subtype='FILE_PATH', default='',
+        description='Optional exact EXR identified by the receipt hash')
     environment_converter: bpy.props.StringProperty(
         name='ENV converter override', subtype='FILE_PATH', default='',
         description='Optional convert.cjs override; otherwise use the add-on preference')
@@ -202,6 +211,14 @@ class JsonMain(bpy.types.Operator, ExportHelper):
     colour_adjustment_enabled: bpy.props.BoolProperty(name='Export colour adjustment',default=False)
     colour_adjustment_strength: bpy.props.FloatProperty(name='Colour adjustment strength',default=1,min=0,max=1)
     colour_adjustment_size: bpy.props.EnumProperty(name='Colour adjustment size',items=(('512','512',''),('1024','1024','')),default='512')
+
+    colour_adjustment_codec: bpy.props.EnumProperty(
+        name='Colour adjustment codec', default='INHERIT',
+        items=(('INHERIT','Inherit material codec','Use the global material codec'),
+               ('basis-lz','ETC1S',''),('uastc','UASTC','')))
+    ktx_lightmap_region_policy: bpy.props.StringProperty(
+        name='RGBD region policy', subtype='FILE_PATH', default='',
+        description='Optional ownership-bound JSON policy for RGBD codec blocks')
 
     def invoke(self, context, event):
         from .colour_adjustment import prefill
@@ -228,7 +245,9 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         exporter = JsonExporter()
         objects = bpy.context.selected_objects if self.export_selected else bpy.context.scene.objects
         options = None
-        if self.convert_to_ktx2 or self.export_skybox or self.export_environment:
+        from .environment_lighting_volume import saved_options
+        associated_volume = saved_options(context.scene.world)
+        if self.convert_to_ktx2 or self.export_skybox or self.export_environment or self.export_spatial_lighting or associated_volume:
             options = dict(executable=self.ktx_executable, flip_y=self.ktx_flip_y,
                            codec=self.ktx_codec, threads=self.ktx_threads,
                            lightmap=self.ktx_lightmap, lightmap_marker=self.ktx_lightmap_marker,
@@ -237,16 +256,22 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                            convert_materials=self.convert_to_ktx2,
                            colour_adjustment_enabled=self.colour_adjustment_enabled,
                            colour_adjustment_strength=self.colour_adjustment_strength,
-                           colour_adjustment_size=int(self.colour_adjustment_size))
+                           colour_adjustment_size=int(self.colour_adjustment_size),
+                           colour_adjustment_codec=self.colour_adjustment_codec,
+                           lightmap_region_policy=bpy.path.abspath(self.ktx_lightmap_region_policy) if self.ktx_lightmap_region_policy else '')
             if self.export_skybox:
                 options['skybox'] = dict(executable=self.basis_executable, image=self.skybox_image,
                     world_controls=self.skybox_world_controls, world_rotation_offset=self.skybox_world_rotation_offset,
                     size=int(self.skybox_size), rotation=self.skybox_rotation, exposure=self.skybox_exposure,
                     tone_map=self.skybox_tone_map, quality=self.skybox_quality, threads=self.skybox_threads)
+            if self.export_spatial_lighting:
+                options['spatial_lighting'] = dict(config=self.spatial_lighting_config, image=self.spatial_lighting_image)
             if self.export_environment:
                 options['environment'] = dict(converter=self.environment_converter,image=self.environment_image,
                     size=int(self.environment_size),exposure=self.environment_exposure,
                     highlight_gain=self.environment_highlight_gain,highlight_threshold=self.environment_highlight_threshold)
+            if associated_volume:
+                options['environment_lighting_volume'] = associated_volume
         exporter.execute(context, self.filepath, objects, ktx_options=options,
                          material_options=dict(metallic=self.material_metallic_multiplier,
                                                roughness=self.material_roughness_multiplier),
@@ -309,12 +334,14 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             options.prop(self, 'ktx_lightmap')
             options.prop(self, 'ktx_lightmap_marker')
             options.prop(self, 'ktx_lightmap_encoding')
+            options.prop(self, 'ktx_lightmap_region_policy')
             options.prop(self, 'ktx_lightmap_size')
             options.prop(self, 'ktx_lightmap_agx')
             options.prop(self, 'colour_adjustment_enabled')
             if self.colour_adjustment_enabled:
                 options.prop(self, 'colour_adjustment_strength')
                 options.prop(self, 'colour_adjustment_size')
+                options.prop(self, 'colour_adjustment_codec')
             if self.ktx_auto_lightmap and not self.ktx_lightmap:
                 from .ktx_export import infer_lightmap
                 objects = context.selected_objects if self.export_selected else context.scene.objects
@@ -349,6 +376,11 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                 sky.label(text='Disable Inline textures in World settings', icon='ERROR')
         from .env_export import find_converter
         env = self.layout.box()
+        spatial = self.layout.box()
+        spatial.prop(self, 'export_spatial_lighting')
+        if self.export_spatial_lighting:
+            spatial.prop(self, 'spatial_lighting_config')
+            spatial.prop(self, 'spatial_lighting_image')
         env.prop(self, 'environment_converter')
         node, script, status = find_converter(self.environment_converter)
         row = env.row()
@@ -409,3 +441,4 @@ def menu_func(self, context):
 if __name__ == '__main__':
     unregister()
     register()
+

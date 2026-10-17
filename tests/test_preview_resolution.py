@@ -45,7 +45,13 @@ indirect=replace_from_disk(indirect,large_i.filepath);ids=replace_from_disk(ids,
 rejected(lambda:validate_preview_resolution(mat,(64,64)),'Stale smoothing')
 config={'size':64,'device':'CPU','preview_material':mat.name,'_root':str(out),'images':{'colour':'colour.exr'},'uv':'SimpleBake'}
 rejected(lambda:worker.check_preview_resolution(config),'Stale smoothing')
-assert update_preview_resolution(mat)['status']=='verified'
+# Export preparation must refresh a retained preview only after all candidate images bind.
+from babylon_js.environment_tools.recipe_cli import refresh_export_preview
+resolution=refresh_export_preview(bpy.context.scene,dict(input_bindings=[dict(path='lighting',source='candidate')],
+    candidate_delivery=dict(bake_size=64)))
+assert resolution['status']=='verified' and resolution['expected_input_size']==[64,64]
+rejected(lambda:refresh_export_preview(bpy.context.scene,dict(input_bindings=[{}],
+    candidate_delivery=dict(bake_size=32))),'configured bake size')
 assert values=={s.name:s.default_value for s in control.inputs}
 assert worker.check_preview_resolution(config)['status']=='verified'
 def evaluate(name):

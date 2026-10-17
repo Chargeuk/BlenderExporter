@@ -86,13 +86,14 @@ def resize_lightmap(array, spec, hdr):
     return result
 
 
-def encode_rgbd(rgb):
+def encode_rgbd(rgb, *, fixed_divisor=False):
     """rgbd-v1: Babylon 7.27 default gamma2.2 RGBD in RGBA8 UNORM."""
     import numpy as np
     rgb = np.asarray(rgb, dtype=np.float32)
     if not np.isfinite(rgb).all() or np.any(rgb < 0) or np.any(rgb > 255):
         raise ValueError('RGBD requires finite nonnegative linear RGB in [0,255]; source is not clipped')
     peak = np.maximum(rgb.max(axis=-1), 1e-7)
+    if fixed_divisor: peak = np.full_like(peak, peak.max())
     divisor = np.minimum(np.floor(np.maximum(255.0 / peak, 1.0)), 255.0) / 255.0
     encoded = np.concatenate((np.power(np.clip(rgb * divisor[..., None], 0, 1), 1 / 2.2), divisor[..., None]), axis=-1)
     pixels = np.rint(encoded * 255).astype(np.uint8)
@@ -185,6 +186,10 @@ def load_plan(config_path):
                 source.suffix.lower() not in ('.exr', '.hdr') or spec['color_space'] != 'linear' or
                 spec['alpha'] != 'preserve' or spec['mipmaps'] or spec['codec'] != 'uastc'):
                 raise ValueError('RGBD requires a marker lightmap, HDR/EXR source, RGBA linear UNORM, UASTC and no mipmaps')
+        if spec.get('rgbd_region_policy'):
+            if spec['encoding'] != 'rgbd-v1': raise ValueError('Region policy requires rgbd-v1')
+            if isinstance(spec['rgbd_region_policy'], str):
+                spec['rgbd_region_policy'] = load_region_policy(root / spec['rgbd_region_policy'])
         spec['source_path'] = str(source)
         specs.append(spec)
         for field, mapping in [('references', refs), ('lightmap_markers', markers)]:
@@ -280,6 +285,10 @@ def prepare(spec, directory):
         if spec.get('encoding') == 'rgbd-v1':
             pixels, rgbd_metrics = encode_rgbd(rgb)
             metrics.update(rgbd_metrics)
+            if spec.get('rgbd_region_policy'):
+                original = pixels.copy()
+                pixels, selected, region = encode_rgbd_regions(rgb, original, spec['rgbd_region_policy'])
+                metrics.update(region_artifacts(original, selected, spec, directory, lambda path, value: Image.fromarray(value).save(path)), **region)
         else:
             rgb = np.clip(rgb, 0, 1)
             if spec['color_space'] == 'srgb':
@@ -395,6 +404,19 @@ def run_conversion(plan, ktx, threads, prepare_image=None):
             command += ['--clevel', '5', '--qlevel', '255'] if spec['codec'] == 'basis-lz' else ['--uastc-quality', '4', '--zstd', '3']
             call(command + [str(png), str(output)])
             call([ktx, 'validate', str(output)])
+            if metrics.get('rgbd_region_baseline'):
+                import numpy as np
+                baseline = prepared_dir / (Path(spec['output']).stem + '_baseline.ktx2')
+                call(command + [metrics['rgbd_region_baseline'], str(baseline)])
+                arrays = []
+                for index, texture in enumerate((baseline, output)):
+                    decoded = prepared_dir / (Path(spec['output']).stem + f'_decoded_{index}.raw')
+                    call([ktx, 'extract', '--transcode', 'rgba8', '--raw', str(texture), str(decoded)])
+                    arrays.append(np.frombuffer(decoded.read_bytes(), dtype=np.uint8).reshape(metrics['dimensions'][1], metrics['dimensions'][0], 4))
+                footprint = np.load(metrics['rgbd_region_footprint'], allow_pickle=False)
+                if not np.array_equal(arrays[0][~footprint], arrays[1][~footprint]):
+                    raise RuntimeError('RGBD codec changed decoded pixels outside the selected region')
+                metrics['rgbd_region']['outside_decoded_exact'] = True
             info = call([ktx, 'info', str(output)])
             (run / (Path(spec['output']).stem + '_ktx_info.txt')).write_text(info, encoding='utf8')
             report['textures'].append(dict(**spec, **metrics, output_bytes=output.stat().st_size, output_sha256=sha(output)))
@@ -446,6 +468,153 @@ def main():
     if not ktx:
         parser.error('KTX-Software is required; supply --ktx or configure tools')
     run_conversion(plan, ktx, args.threads)
+
+def colour_codec(options):
+    value = options.get('colour_adjustment_codec', 'INHERIT')
+    value = options.get('codec', 'basis-lz') if value == 'INHERIT' else value
+    if value not in ('basis-lz', 'uastc'):
+        raise ValueError('Colour adjustment codec must be INHERIT, basis-lz or uastc')
+    return value
+
+
+def load_region_policy(path):
+    """Bind a declarative policy and ownership inputs before conversion starts."""
+    path = Path(path).resolve()
+    policy = read_json(path)
+    if policy.get('schema_version') != 1 or policy.get('encoding') != 'rgbd-v1':
+        raise ValueError('Expected region schema_version 1 and rgbd-v1 encoding')
+    result = dict(policy, policy_path=str(path), policy_sha256=sha(path))
+    for key in ('ownership_labels', 'islands'):
+        source = (path.parent / policy[key]).resolve()
+        if not source.is_file():
+            raise ValueError('Missing region dependency: ' + str(source))
+        expected = policy.get(key + '_sha256')
+        if expected and sha(source) != expected:
+            raise ValueError('Region dependency identity mismatch: ' + key)
+        result[key] = str(source)
+        result[key + '_sha256'] = sha(source)
+    if policy.get('geometry_reference'):
+        source = (path.parent / policy['geometry_reference']).resolve()
+        if not source.is_file(): raise ValueError('Missing region geometry reference')
+        result['geometry_reference'] = str(source)
+        result['geometry_reference_sha256'] = sha(source)
+    return result
+
+
+def encode_rgbd_regions(rgb, original, policy):
+    """Change complete 4x4 blocks only; protect all nonselected owned pixels.
+
+    Labels and RGB use top-down image orientation. A one-pixel nearest guard
+    uses the same tie order as scipy's EDT (left, up, down, right), without a
+    scipy dependency in Blender. Ownership IDs and object selectors are data.
+    """
+    import io
+    import numpy as np
+    rgb = np.asarray(rgb, dtype=np.float32)
+    h, w = rgb.shape[:2]
+    if rgb.shape != (h, w, 3) or original.shape != (h, w, 4) or original.dtype != np.uint8:
+        raise ValueError('Region RGB and original RGBA8 dimensions must match')
+    if h % 4 or w % 4 or not np.isfinite(rgb).all() or (rgb < 0).any():
+        raise ValueError('Region encoding requires finite positive RGB and dimensions divisible by four')
+    if policy.get('block_size', 4) != 4 or policy.get('guard_pixels', 1) != 1:
+        raise ValueError('Region encoding supports 4x4 blocks and one-pixel nearest padding')
+    for key in ('ownership_labels', 'islands'):
+        if sha(Path(policy[key])) != policy.get(key + '_sha256'):
+            raise ValueError('Region input changed: ' + key)
+    if policy.get('policy_path') and sha(Path(policy['policy_path'])) != policy['policy_sha256']:
+        raise ValueError('Region policy changed during conversion')
+    loaded = np.load(policy['ownership_labels'], allow_pickle=False)
+    if isinstance(loaded, np.lib.npyio.NpzFile):
+        try:
+            if loaded.files != ['labels']: raise ValueError('Ownership NPZ must contain labels only')
+            labels = loaded['labels']
+        finally: loaded.close()
+    else: labels = loaded
+    if policy.get('ownership_array_npy_sha256'):
+        stream = io.BytesIO(); np.save(stream, labels)
+        if hashlib.sha256(stream.getvalue()).hexdigest() != policy['ownership_array_npy_sha256']:
+            raise ValueError('Ownership array identity mismatch')
+    if labels.ndim != 2 or not np.isfinite(labels).all() or (labels < 0).any() or not np.equal(labels, np.floor(labels)).all():
+        raise ValueError('Ownership must contain nonnegative integer IDs')
+    if labels.shape != (h, w):
+        sh, sw = labels.shape
+        if sh % h or sw % w or sh // h != sw // w or sh < h:
+            raise ValueError('Ownership cannot be matched to the output resolution')
+        scale = sh // h
+        labels = labels[scale//2::scale, scale//2::scale]
+    islands = read_json(Path(policy['islands']))
+    ids = [row['id'] for row in islands]
+    if len(set(ids)) != len(ids) or any(type(v) is not int or v <= 0 for v in ids):
+        raise ValueError('Island catalogue IDs must be unique positive integers')
+    if not set(np.unique(labels)) - {0} <= set(ids):
+        raise ValueError('Ownership IDs are absent from the matching catalogue')
+    if policy.get('geometry_reference'):
+        if sha(Path(policy['geometry_reference'])) != policy['geometry_reference_sha256']:
+            raise ValueError('Region geometry reference changed')
+        geometry = read_json(Path(policy['geometry_reference']))
+        if geometry.get('geometry_sha256') != policy.get('geometry_sha256'):
+            raise ValueError('Region geometry identity mismatch')
+    def selected_ids(spec):
+        wanted = set(spec.get('ids', []))
+        names, prefixes = spec.get('objects', []), tuple(spec.get('object_prefixes', []))
+        wanted.update(row['id'] for row in islands if row.get('object') in names or
+                      (prefixes and row.get('object', '').startswith(prefixes)))
+        if not wanted or not wanted <= set(ids): raise ValueError('Region selector is empty or references unknown IDs')
+        return sorted(wanted)
+    selected = selected_ids(policy['selection'])
+    special = selected_ids(policy['stepped_selection']) if policy.get('stepped_selection') else []
+    if not set(special) <= set(selected): raise ValueError('Stepped region must be within selected ownership')
+    guard = labels.copy()
+    # Only unowned pixels receive padding. Lexicographic nearest ties match EDT.
+    for dy, dx in ((0,-1),(-1,0),(1,0),(0,1)):
+        shifted = np.zeros_like(labels)
+        y0,y1=max(0,-dy),min(h,h-dy); x0,x1=max(0,-dx),min(w,w-dx)
+        shifted[y0:y1,x0:x1] = labels[y0+dy:y1+dy,x0+dx:x1+dx]
+        use = (guard == 0) & (shifted > 0)
+        guard[use] = shifted[use]
+    def blocks(mask): return mask.reshape(h//4,4,w//4,4).any(axis=(1,3))
+    fixture_blocks = blocks(np.isin(guard, selected))
+    protected = blocks((labels > 0) & ~np.isin(labels, selected))
+    affected = fixture_blocks & ~protected
+    if not affected.any(): raise ValueError('Selected ownership has no unprotected codec blocks')
+    safe = np.minimum(np.floor(255 / np.maximum(rgb.reshape(h//4,4,w//4,4,3).max(axis=(1,3,4)),1e-7)),255).astype(np.uint8)
+    minimum = policy.get('minimum_alpha_code', 3)
+    if type(minimum) is not int or not 1 <= minimum <= 255 or (safe[affected] < minimum).any():
+        raise ValueError('Selected RGBD radiance exceeds the configured minimum divisor; source is not clipped')
+    codes = safe.copy()
+    if special:
+        steps = np.array(policy.get('alpha_steps', [3,7,15,31,63,127,255]))
+        if steps.ndim != 1 or not len(steps) or not np.equal(steps,np.floor(steps)).all() or steps[0] < minimum or steps[-1] > 255 or (np.diff(steps) <= 0).any():
+            raise ValueError('Alpha steps must be increasing integer codes within the allowed range')
+        stepped = blocks(np.isin(guard, special)) & affected
+        indices = np.searchsorted(steps, safe[stepped], side='right') - 1
+        if (indices < 0).any(): raise ValueError('No representable stepped divisor for selected radiance')
+        codes[stepped] = steps[indices]
+    alpha = codes.repeat(4,0).repeat(4,1)
+    scaled = rgb * (alpha.astype(np.float32)/255)[...,None]
+    footprint = affected.repeat(4,0).repeat(4,1)
+    if not np.isfinite(scaled[footprint]).all() or (scaled[footprint] > 1.000001).any():
+        raise ValueError('Region RGBD would clip source radiance')
+    pixels = original.copy()
+    encoded = np.dstack((np.rint(np.power(np.clip(scaled,0,1),1/2.2)*255).astype(np.uint8),alpha))
+    pixels[footprint] = encoded[footprint]
+    if not np.array_equal(pixels[~footprint], original[~footprint]):
+        raise RuntimeError('Region encoding changed pixels outside selected codec blocks')
+    return pixels, footprint, dict(rgbd_region=dict(affected_blocks=int(affected.sum()),
+        mixed_blocks_retained_original=int((fixture_blocks & protected).sum()), outside_prepared_exact=True,
+        policy_sha256=policy.get('policy_sha256'), source_radiance_clipped=False),
+        alpha_min=int(pixels[...,3].min()), alpha_max=int(pixels[...,3].max()))
+
+
+def region_artifacts(original, selected, spec, directory, write_png):
+    """Keep baseline inputs so the real codec can verify decoded outside pixels."""
+    import numpy as np
+    stem = Path(spec['output']).stem
+    baseline = directory / (stem + '_region_baseline.png')
+    footprint = directory / (stem + '_region_footprint.npy')
+    write_png(baseline, original[::-1].copy() if spec['flip_y'] else original)
+    np.save(footprint, selected[::-1].copy() if spec['flip_y'] else selected)
+    return dict(rgbd_region_baseline=str(baseline), rgbd_region_footprint=str(footprint))
 
 
 if __name__ == '__main__':

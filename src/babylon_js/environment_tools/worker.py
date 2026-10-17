@@ -1,5 +1,5 @@
 """Run only in a disposable background Blender process opened on a saved scene."""
-import sys, json, math, time
+import sys, json, math, time, hashlib
 from pathlib import Path
 import bpy
 import numpy as np
@@ -8,7 +8,7 @@ from mathutils import Vector
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent.parent))
-from common import load_config, sha, save_json
+from common import load_config, sha, save_json, normalize_metal_diffuse
 from babylon_js import environment_controls as world_tools
 from babylon_js.lighting_controls import validate_preview_resolution
 from image_binding import replace_from_disk
@@ -195,7 +195,7 @@ def bake(c,root,stage):
         if o.type=='MESH':o.hide_render=o not in receivers+contributors
         if o.type=='LIGHT':o.hide_render=o not in lights
     effective_records=[]
-    def record_effective(phase,mode,names):
+    def record_effective(phase,mode,names,passes=None,material_proof=None):
         enabled_lights=sorted(o.name for o in s.objects if o.type=='LIGHT' and not o.hide_render)
         assert enabled_lights==sorted(o.name for o in lights), 'Unexpected bake light visibility'
         assert not s.cycles.use_adaptive_sampling
@@ -203,6 +203,14 @@ def bake(c,root,stage):
         if c.get('quality')=='final' and mode=='INDIRECT':
             assert s.cycles.samples==2048, 'Final indirect must be exactly 2048 fixed samples'
         effective_records.append(dict(phase=phase,pass_name=mode,receivers=names,
+            pass_filter=sorted(passes or {mode}),
+            preserve_metal_diffuse_weight=c.get('preserve_metal_diffuse_weight',False),
+            material_proof=material_proof,
+            transport_materials=[dict(object=o.name,materials=[m.name if m else None for m in o.data.materials])
+                for o in sorted(s.objects,key=lambda obj:obj.name) if o.type=='MESH' and not o.hide_render],
+            light_proof=[dict(name=o.name,type=o.data.type,energy=o.data.energy,color=list(o.data.color),
+                matrix_world=[list(row) for row in o.matrix_world],
+                properties={key:getattr(o.data,key) for key in ('size','size_y','shape','spot_size','spot_blend','shadow_soft_size') if hasattr(o.data,key)}) for o in lights],
             samples=s.cycles.samples,adaptive=s.cycles.use_adaptive_sampling,
             denoising=s.cycles.use_denoising,device=s.cycles.device,
             compute_device=bpy.context.preferences.addons['cycles'].preferences.compute_device_type,
@@ -234,34 +242,75 @@ def bake(c,root,stage):
     caps=select(c,'metal_receivers')
     if not set(caps).issubset(receivers):raise ValueError('Metal receivers must be bake receivers')
     metadata=[]
+    preserve=c.get('preserve_metal_diffuse_weight',False)
+    if type(preserve) is not bool:raise ValueError('preserve_metal_diffuse_weight must be boolean')
+    source=Path(c.get('_source') or bpy.data.filepath)
+    source_sha=sha(source) if preserve else None
+    transport_meshes={obj:obj.data for obj in receivers+contributors}
+    transport_materials={obj:tuple(obj.data.materials) for obj in receivers+contributors}
     for index,o in enumerate(caps):
-        original_mesh=o.data
-        # Data-linked instances must keep their real materials during this receiver's bake.
-        o.data=original_mesh.copy()
-        originals=list(o.data.materials); clones=[]
-        for mat in originals:
-            clone=mat.copy();p=next(n for n in clone.node_tree.nodes if n.type=='BSDF_PRINCIPLED')
-            socket=p.inputs['Metallic']; minimum=clone.node_tree.nodes.new('ShaderNodeMath');minimum.operation='MINIMUM'
-            minimum.inputs[1].default_value=c.get('metallic_cap',.8)
-            if socket.is_linked:clone.node_tree.links.new(socket.links[0].from_socket,minimum.inputs[0])
-            else:minimum.inputs[0].default_value=socket.default_value
-            clone.node_tree.links.new(minimum.outputs[0],socket);clones.append(clone)
-        o.data.materials.clear()
-        for m in clones:o.data.materials.append(m)
-        im=target_image(c,clones)
-        bpy.ops.object.select_all(action='DESELECT');o.hide_set(False);o.select_set(True);bpy.context.view_layer.objects.active=o
-        for mode in ('DIRECT','INDIRECT'):
-            s.cycles.samples=c['samples'][mode]
-            record_effective('metal_cap',mode,[o.name])
-            save_json(stage/'progress.json',{'phase':'metal_cap','object':o.name,'completed':index,'total':len(caps),'pass':mode})
-            bpy.ops.object.bake(type='DIFFUSE',pass_filter={mode},margin=0,use_clear=True,use_selected_to_active=False,uv_layer=c.get('uv','SimpleBake'))
-            a=raw_pixels(im);path=stage/f'metal_{index}_{mode.lower()}.npz';np.savez_compressed(path,pixels=a)
-            metadata.append({'object':o.name,'pass':mode.lower(),'file':path.name})
-        o.data.materials.clear()
-        for m in originals:o.data.materials.append(m)
-        for m in clones:bpy.data.materials.remove(m)
-        bpy.data.images.remove(im)
-        temporary_mesh=o.data;o.data=original_mesh;bpy.data.meshes.remove(temporary_mesh)
+        original_mesh=o.data; temporary_mesh=None; clones=[]; im=None
+        was_hidden=o.hide_get()
+        try:
+            # An EMIT bake on evaluated copies leaves all transport untouched and
+            # provides the local base plus native coverage, including black texels.
+            base_path=stage/f'metal_{index}_base.exr'
+            base=bake_albedo(bpy.context,[o],base_path,c['size'],c.get('uv','SimpleBake')) if preserve else None
+            proof={'source_blend_sha256':source_sha,'metallic_cap':c.get('metallic_cap',.8),
+                   'cap_operation':'MINIMUM','materials':[]}
+            if preserve:
+                proof.update(base_file=base_path.name,base_sha256=sha(base_path),
+                    base_provenance_file=base_path.name+'.json',
+                    base_semantics='linear Principled Base Color via local native EMIT',
+                    coverage_sha256=hashlib.sha256(np.ascontiguousarray(base[...,3]).tobytes()).hexdigest())
+            # Data-linked instances must keep their real materials during this receiver's bake.
+            o.data=original_mesh.copy();temporary_mesh=o.data
+            for mat in original_mesh.materials:
+                clone=mat.copy();clones.append(clone)
+                p=next(n for n in clone.node_tree.nodes if n.type=='BSDF_PRINCIPLED')
+                socket=p.inputs['Metallic']
+                linked=socket.links[0].from_socket if socket.is_linked else None
+                proof['materials'].append({'source':mat.name,'effective':clone.name,
+                    'principled_node':p.name,'metallic_default':socket.default_value,
+                    'metallic_link':{'node':linked.node.name,'socket':linked.identifier} if linked else None})
+                minimum=clone.node_tree.nodes.new('ShaderNodeMath');minimum.operation='MINIMUM'
+                minimum.inputs[1].default_value=c.get('metallic_cap',.8)
+                if linked:clone.node_tree.links.new(linked,minimum.inputs[0])
+                else:minimum.inputs[0].default_value=socket.default_value
+                clone.node_tree.links.new(minimum.outputs[0],socket)
+            o.data.materials.clear()
+            for m in clones:o.data.materials.append(m)
+            im=target_image(c,clones)
+            bpy.ops.object.select_all(action='DESELECT');o.hide_set(False);o.select_set(True);bpy.context.view_layer.objects.active=o
+            for mode in ('DIRECT','INDIRECT'):
+                s.cycles.samples=c['samples'][mode]
+                passes={mode,'COLOR'} if preserve else {mode}
+                record_effective('metal_cap',mode,[o.name],passes,proof)
+                save_json(stage/'progress.json',{'phase':'metal_cap','object':o.name,'completed':index,'total':len(caps),'pass':mode})
+                bpy.ops.object.bake(type='DIFFUSE',pass_filter=passes,margin=0,use_clear=True,use_selected_to_active=False,uv_layer=c.get('uv','SimpleBake'))
+                a=raw_pixels(im);path=stage/f'metal_{index}_{mode.lower()}.npz'
+                row={'object':o.name,'pass':mode.lower(),'file':path.name,
+                     'pass_filter':sorted(passes),'preserve_metal_diffuse_weight':preserve}
+                if preserve:
+                    # Retain the original weighted output independently of the
+                    # normalized patch; COLOR alpha is deliberately not coverage.
+                    weighted_path=stage/f'metal_{index}_{mode.lower()}_weighted.npz'
+                    np.savez_compressed(weighted_path,pixels=a)
+                    a,division=normalize_metal_diffuse(a,base)
+                    row.update(proof,division=division,weighted_file=weighted_path.name,
+                        weighted_sha256=sha(weighted_path),semantics='native diffuse including COLOR divided by EMIT base; base applied once later')
+                np.savez_compressed(path,pixels=a)
+                if preserve:row['sha256']=sha(path)
+                metadata.append(row)
+        finally:
+            # Restore the original mesh, not a reconstructed material list. This
+            # also protects shared-data contributors on failures and black-base rejection.
+            o.data=original_mesh;o.hide_set(was_hidden)
+            if temporary_mesh is not None:bpy.data.meshes.remove(temporary_mesh)
+            for m in clones:bpy.data.materials.remove(m)
+            if im is not None:bpy.data.images.remove(im)
+            for obj,mesh in transport_meshes.items():
+                assert obj.data==mesh and tuple(obj.data.materials)==transport_materials[obj], 'Transport materials changed: '+obj.name
     save_json(stage/'metal_patches.json',metadata)
     return {'joined_normal_max_error':err,'island_count':len(catalogue),'metal_receiver_count':len(caps),'samples':c['samples']}
 
@@ -330,7 +379,7 @@ def reuse_check(c,root):
             'note':'Caller must verify unchanged physical source/lighting against bake provenance.'}
 
 
-def capture(c,root,stage,thumbnail=False):
+def capture(c,root,stage,thumbnail=False,*,prepare_only=False):
     s=setup(c);receivers=select(c,'receivers');glass=select(c,'glass')
     spec=c['thumbnail' if thumbnail else 'capture']
     mode=spec.get('mode','baked')
@@ -368,6 +417,9 @@ def capture(c,root,stage,thumbnail=False):
     if thumbnail:s.render.image_settings.quality=90
     else:s.render.image_settings.exr_codec='ZIP'
     path=stage/('thumbnail.jpg' if thumbnail else 'capture.exr');s.render.filepath=str(path)
+    if prepare_only:
+        # Probe volumes reuse this exact prepared appearance and move one camera.
+        return {'mode':mode,'world_output':branch,'position':list(camera.location)}
     rays=[]
     deps=bpy.context.evaluated_depsgraph_get()
     for direction in ((1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1)):

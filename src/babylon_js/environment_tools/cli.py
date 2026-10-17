@@ -16,7 +16,41 @@ LIGHTMAP = HERE.parent / 'lightmap_tools'
 STAGES = ['preflight', 'geometry', 'bake', 'ownership', 'process', 'ao', 'combine', 'capture', 'env', 'thumbnail', 'snapshot', 'validate']
 
 
+def preparation_command(argv):
+    """Preparation shares this entrypoint without requiring denoising tools."""
+    from recipe_cli import main as recipe_main
+    p=argparse.ArgumentParser(description='Prepare a disposable source/export from project policy')
+    p.add_argument('command',choices=('prepare-physical','prepare-albedo','prepare-export','bind-candidate'))
+    p.add_argument('--config',type=Path,required=True)
+    p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--blender',type=Path)
+    p.add_argument('--size',type=int,default=512)
+    p.add_argument('--reuse-current',action='store_true')
+    p.add_argument('--audit-only',action='store_true')
+    p.add_argument('--build-candidate',type=Path)
+    a=p.parse_args(argv)
+    command=a.command.removeprefix('prepare-')
+    extra=[]
+    if command=='bind-candidate':
+        if not a.build_candidate:p.error('bind-candidate requires --build-candidate')
+        recipe_main(command,a.config,[str(a.output),'--build-candidate',str(a.build_candidate)])
+        return
+    if not a.blender:p.error('Preparation requires --blender')
+    config=json.loads(a.config.read_text(encoding='utf-8-sig'))
+    source=(a.config.parent/config['blend' if command in ('physical','albedo') else 'source']).resolve()
+    if config.get('package_root'):source=Path(config['package_root'])/config['source']
+    if not source.is_file():raise ValueError('Missing saved preparation source: '+str(source))
+    if command=='physical':
+        extra=['--size',str(a.size)]+(['--reuse-current'] if a.reuse_current else [])
+    if command=='export' and a.audit_only:extra=['--audit-only']
+    flags={'creationflags':subprocess.CREATE_NO_WINDOW} if sys.platform=='win32' else {}
+    subprocess.run([str(a.blender),'-b',str(source),'--python-exit-code','1','--python',str(HERE/'recipe_cli.py'),
+        '--',command,'--config',str(a.config.resolve()),str(a.output.resolve()),*extra],check=True,**flags)
+
+
 def main():
+    if len(sys.argv)>1 and sys.argv[1] in ('prepare-physical','prepare-albedo','prepare-export','bind-candidate'):
+        preparation_command(sys.argv[1:]);return
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('command', choices=STAGES + ['restore'])
     p.add_argument('--config', type=Path, required=True)

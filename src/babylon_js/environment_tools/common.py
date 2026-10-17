@@ -44,6 +44,9 @@ def load_config(path):
     if c.get('quality', 'final') == 'final' and c['samples']['INDIRECT'] != 2048:
         raise ValueError('Final indirect bake requires exactly 2048 fixed samples; label experiments preview')
     if not 0 <= c.get('metallic_cap', .8) <= 1: raise ValueError('Invalid receiving metallic cap')
+    c.setdefault('preserve_metal_diffuse_weight', False)
+    if type(c['preserve_metal_diffuse_weight']) is not bool:
+        raise ValueError('preserve_metal_diffuse_weight must be boolean')
     for key in ('direct', 'indirect', 'island_ids', 'combined', 'colour'):
         if key not in c.get('images', {}): raise ValueError('Missing image binding: ' + key)
     if c.get('ao',{}).get('enabled',False):
@@ -54,3 +57,42 @@ def load_config(path):
             if not isinstance(ao.get(key),int) or not 1<=ao[key]<=4096:raise ValueError('AO requires explicit positive '+key)
         if 'ao' not in c['images']:raise ValueError('Missing image binding: ao')
     return c
+
+
+def normalize_metal_diffuse(weighted, base, *, base_epsilon=1e-8, residual_tolerance=1e-6):
+    """Remove only EMIT base colour; retain the native diffuse closure weight.
+
+    COLOR-bearing DIFFUSE alpha is opaque even outside UV charts. Only the
+    matching zero-margin native EMIT alpha can define receiver coverage.
+    """
+    import numpy as np
+    weighted = np.asarray(weighted, dtype=np.float32)
+    base = np.asarray(base, dtype=np.float32)
+    if weighted.shape != base.shape or base.ndim != 3 or base.shape[2] != 4:
+        raise ValueError('Weighted diffuse and local EMIT base must be matching RGBA')
+    if not np.isfinite(weighted).all() or not np.isfinite(base).all():
+        raise ValueError('Non-finite weighted diffuse or local EMIT base')
+    alpha = base[..., 3]
+    if not np.isin(alpha, (0, 1)).all():
+        raise ValueError('Local EMIT coverage must be binary')
+    mask = alpha == 1
+    if not mask.any():
+        raise ValueError('Local EMIT coverage is empty')
+    colour = base[..., :3]
+    if (colour[mask] < 0).any():
+        raise ValueError('Negative local EMIT base colour')
+    protected = mask[..., None] & (colour <= base_epsilon)
+    residual = np.abs(weighted[..., :3][protected])
+    if (residual > residual_tolerance).any():
+        raise ValueError('Weighted diffuse has energy in a zero/near-zero base channel')
+    result = np.zeros_like(base)
+    valid = mask[..., None] & (colour > base_epsilon)
+    np.divide(weighted[..., :3], colour, out=result[..., :3], where=valid)
+    result[..., 3] = alpha
+    if not np.isfinite(result).all():
+        raise ValueError('Non-finite base-divided diffuse')
+    return result, {'owned_pixels': int(mask.sum()), 'off_footprint_pixels': int((~mask).sum()),
+                    'coverage_source': 'local native zero-margin EMIT alpha',
+                    'base_epsilon': base_epsilon, 'residual_tolerance': residual_tolerance,
+                    'protected_base_channels': int(protected.sum()),
+                    'protected_residual_max': float(residual.max()) if residual.size else 0.0}

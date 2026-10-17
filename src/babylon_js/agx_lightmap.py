@@ -34,17 +34,59 @@ def read_exr(path):
     return result
 
 
-def compensate(colour, lighting, processor, mask):
+RANGE_NORMALIZATION = 'shadow-aware-v1'
+
+
+def normalization_profile(profile):
+    """Normalization needs a complete artist profile, never implicit defaults."""
+    from .lighting_profile import DEFAULT_LIGHTING, lighting_profile
+    if not isinstance(profile, dict) or set(profile) != set(DEFAULT_LIGHTING):
+        raise ValueError('AgX range normalization requires a complete lighting profile')
+    if isinstance(profile['version'], bool):
+        raise ValueError('Invalid AgX normalization profile version')
+    result = lighting_profile(profile)
+    if result['mode'] != 'shadow-aware':
+        raise ValueError('AgX range normalization requires shadow-aware mode')
+    return result
+
+
+def normalize_compensation(array, profile, *, already_normalized=False):
+    """Scale only derived lighting, paired with bounded shader metadata."""
+    if already_normalized:
+        raise ValueError('Already range-normalized input')
+    artist = normalization_profile(profile)
+    if (array.ndim != 3 or array.shape[2] != 3 or not array.size or
+            not np.isfinite(array).all() or (array < 0).any()):
+        raise ValueError('Normalization requires finite nonnegative RGB lighting')
+    maximum = float(array.max())
+    gain = max(1.0, maximum / 254.0)
+    derived = dict(artist, bakedIntensity=artist['bakedIntensity'] * gain,
+                   fullyLitThreshold=artist['fullyLitThreshold'] / gain)
+    # Existing artist-control bounds remain strict; never clamp a derived field.
+    normalization_profile(derived)
+    result = array.copy() if gain == 1 else np.asarray(array / gain, dtype=np.float32)
+    return result, dict(version=1, option=RANGE_NORMALIZATION, gain=gain,
+                        input_max=maximum, output_max=float(result.max()),
+                        input_array_sha256=hashlib.sha256(np.asarray(array, dtype=np.float32).tobytes()).hexdigest(),
+                        output_array_sha256=hashlib.sha256(np.asarray(result, dtype=np.float32).tobytes()).hexdigest(),
+                        artist_profile=artist, serialized_profile=derived)
+
+
+def compensate(colour, lighting, processor, mask, *, range_normalization=None):
     """Keep preservation independent: never counteract the user's runtime slider."""
+    if range_normalization not in (None, RANGE_NORMALIZATION):
+        raise ValueError('Unsupported AgX range normalization option')
     if colour.shape != lighting.shape or colour.shape[:2] != mask.shape or not mask.any():
         raise ValueError('Colour, lighting and coverage must match')
     if not np.isfinite(colour).all() or not np.isfinite(lighting).all() or (colour < 0).any():
         raise ValueError('Invalid compensation inputs')
+    if range_normalization and (lighting < 0).any():
+        raise ValueError('Normalization requires nonnegative source lighting')
     display = np.ascontiguousarray(np.maximum(colour * lighting, 0), dtype=np.float32)
     processor.applyRGB(display.reshape(-1, 3))
     target = np.clip(display, 0, 1) ** 2.2
     result = target / np.maximum(colour, 1e-5)
-    if not np.isfinite(result).all() or result[mask].max() > 255:
+    if not np.isfinite(result).all() or (range_normalization is None and result[mask].max() > 255):
         raise ValueError('AgX correction exceeds RGBD range; inspect near-black albedo')
     return result, {'division_floor_channels': int((colour[mask] < 1e-5).sum()),
                     'owned_pixels': int(mask.sum()), 'corrected_max': float(result[mask].max())}
@@ -238,11 +280,18 @@ def combine_saved_controls(context, size, path, *, material=None):
     return array
 
 
-def export_compensated(context, objects, marker, source, directory, colour_adjustment=None):
+def export_compensated(context, objects, marker, source, directory, colour_adjustment=None,
+                       *, range_normalization=None, artist_profile=None):
     import bpy, PyOpenColorIO as ocio
     directory=Path(directory);directory.mkdir(parents=True,exist_ok=True)
     if Path(str(source)+'.agx.json').is_file():
         raise ValueError('Already AgX-compensated input; select original linear lighting master')
+    if Path(str(source)+'.normalization.json').is_file():
+        raise ValueError('Already range-normalized input; select original linear lighting master')
+    if range_normalization not in (None, RANGE_NORMALIZATION):
+        raise ValueError('Unsupported AgX range normalization option')
+    if range_normalization:
+        artist_profile = normalization_profile(artist_profile)
     view=context.scene.view_settings
     if view.view_transform!='AgX': raise ValueError('AgX compensation requires Blender view transform AgX')
     settings={'exposure':view.exposure,'gamma':view.gamma,'look':view.look}
@@ -269,13 +318,22 @@ def export_compensated(context, objects, marker, source, directory, colour_adjus
         def applyRGB(self, data):
             data *= 2**settings['exposure'];cpu.applyRGB(data)
             np.maximum(data,0,out=data);np.power(data,1/settings['gamma'],out=data)
-    corrected,metrics=compensate(colour[...,:3],lighting,Display(),mask)
+    corrected,metrics=compensate(colour[...,:3],lighting,Display(),mask,
+                                range_normalization=range_normalization)
     corrected=fill_gaps(corrected,mask)
+    normalization = None
+    if range_normalization:
+        corrected, normalization = normalize_compensation(corrected, artist_profile)
+        normalization['selected_marker'] = marker
     output=directory/(Path(source).stem+'_agx.exr');write_exr(output,corrected)
     record={'schema_version':1,'source':str(source),'source_sha256':sha(source),
             'source_controls_recombined':combined is not None,'albedo':str(directory/'albedo_uv.exr'),
             'albedo_sha256':sha(directory/'albedo_uv.exr'),'config_sha256':sha(config_path),
             'settings':settings,'inverse_runtime_display':'gamma 2.2','preservation':'independent runtime control',
             'output_sha256':sha(output),**metrics}
+    if normalization:
+        normalization.update(source_sha256=record['source_sha256'],
+                             output_sha256=record['output_sha256'])
+        record['range_normalization'] = normalization
     Path(str(output)+'.agx.json').write_text(json.dumps(record,indent=2))
     return output,record

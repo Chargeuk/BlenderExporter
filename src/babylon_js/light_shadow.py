@@ -83,6 +83,9 @@ class Light(FCurveAnimatable):
         self.specular  = bpyLight.data.color * bpyLight.data.specular_factor
 
         # changes to the light when there is a shadow map
+        self.runtime_shadow_enabled = bpyLight.get('bjs_runtime_shadow_enabled')
+        if self.runtime_shadow_enabled is not None and type(self.runtime_shadow_enabled) is not bool:
+            raise ValueError('bjs_runtime_shadow_enabled must be boolean: ' + self.name)
         self.usingShadows = bpyLight.data.shadowMap != NO_SHADOWS
         self.autoCalcShadowZBounds = bpyLight.data.autoCalcShadowZBounds
         self.shadowMinZ = bpyLight.data.shadowMinZ
@@ -120,6 +123,9 @@ class Light(FCurveAnimatable):
         write_color(file_handler, 'diffuse', self.diffuse)
         write_color(file_handler, 'specular', self.specular)
         write_float(file_handler, 'radius', self.radius)
+
+        if self.runtime_shadow_enabled is not None:
+            write_bool(file_handler, 'shadowEnabled', self.runtime_shadow_enabled)
 
         # changes actually being made to the associated shadow map
         if self.usingShadows:
@@ -208,6 +214,15 @@ class ShadowGenerator:
         file_handler.write(']')
         file_handler.write('}')
 #===============================================================================
+bpy.types.Light.bjs_spatial_lighting = bpy.props.BoolProperty(
+    name='Use spatial light field', default=False,
+    description='Associate this exported light with the optional environment-local relative irradiance field')
+bpy.types.Light.bjs_spatial_lighting_strength = bpy.props.FloatProperty(
+    name='Spatial field strength', default=1, min=0, max=100)
+bpy.types.Light.bjs_spatial_lighting_unmapped_intensity = bpy.props.FloatProperty(
+    name='Unmapped intensity', default=-1, min=-1,
+    description='Negative keeps the existing light intensity without the spatial field; zero explicitly turns that contribution off')
+
 bpy.types.Light.autoAnimate = bpy.props.BoolProperty(
     name='Auto launch animations',
     description='',
@@ -318,6 +333,10 @@ class BJS_PT_LightPanel(bpy.types.Panel):
         row = layout.row(heading='PBR Intensity Mode')
         row.prop(ob.data, 'pbrIntensityMode')
 
+        layout.prop(ob.data, 'bjs_spatial_lighting')
+        if ob.data.bjs_spatial_lighting:
+            layout.prop(ob.data, 'bjs_spatial_lighting_strength')
+            layout.prop(ob.data, 'bjs_spatial_lighting_unmapped_intensity')
         layout.prop(ob.data, 'useOwnCollection')
         layout.prop(ob.data, 'shadowMap')
 
