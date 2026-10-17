@@ -133,6 +133,11 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         name='KaDshow lightmap encoding', default='legacy',
         items=(('legacy', 'Legacy LDR', 'Existing lightmap format; values above one are clipped'),
                ('rgbd-v1', 'RGBD HDR (requires updated KaDshow)', 'Preserve HDR lighting in RGBA; opt-in metadata and UASTC')))
+    ktx_lightmap_divisor_mode: bpy.props.EnumProperty(
+        name='RGBD divisor', default='per-pixel',
+        description='Image-wide keeps one divisor for lossy alpha stability but reduces dark RGB precision; validate the full decoded map',
+        items=(('per-pixel', 'Per pixel (default)', 'Preserve the existing adaptive RGBD precision'),
+               ('image-wide', 'Image wide (optional)', 'Use the full post-AgX resized image peak; requires RGBD')))
     ktx_lightmap_size: bpy.props.EnumProperty(
         name='Lightmap export size', default='0',
         description='Downsample the export copy in linear light before encoding; preserve the source and never upscale',
@@ -252,6 +257,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                            codec=self.ktx_codec, threads=self.ktx_threads,
                            lightmap=self.ktx_lightmap, lightmap_marker=self.ktx_lightmap_marker,
                            auto_lightmap=self.ktx_auto_lightmap, lightmap_encoding=self.ktx_lightmap_encoding,
+                           lightmap_divisor_mode=self.ktx_lightmap_divisor_mode,
                            lightmap_size=int(self.ktx_lightmap_size), lightmap_agx=self.ktx_lightmap_agx,
                            convert_materials=self.convert_to_ktx2,
                            colour_adjustment_enabled=self.colour_adjustment_enabled,
@@ -334,6 +340,7 @@ class JsonMain(bpy.types.Operator, ExportHelper):
             options.prop(self, 'ktx_lightmap')
             options.prop(self, 'ktx_lightmap_marker')
             options.prop(self, 'ktx_lightmap_encoding')
+            options.prop(self, 'ktx_lightmap_divisor_mode')
             options.prop(self, 'ktx_lightmap_region_policy')
             options.prop(self, 'ktx_lightmap_size')
             options.prop(self, 'ktx_lightmap_agx')

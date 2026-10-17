@@ -1,9 +1,11 @@
 """Real Blender RGBD export, channel preservation and PBR opacity regression."""
-import bpy,json,sys,subprocess
+import bpy,json,sys,subprocess,os
 from pathlib import Path
 import numpy as np
 import OpenImageIO as oiio
-ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'src'))
+ROOT=Path(__file__).resolve().parents[1]
+ADDON_ROOT=Path(os.environ.get('BJS_TEST_ADDON_ROOT',ROOT/'src/babylon_js'))
+sys.path.insert(0,str(ADDON_ROOT.parent))
 import babylon_js
 from babylon_js import ktx_export as ktx,ktx_conversion as core
 from babylon_js.json_exporter import JsonExporter
@@ -11,6 +13,7 @@ OUT=Path(sys.argv[sys.argv.index('--')+1]);OUT.mkdir(parents=True,exist_ok=False
 TOOL=sys.argv[sys.argv.index('--')+2]
 babylon_js.register()
 assert bpy.ops.export.bjs.get_rna_type().properties['ktx_lightmap_encoding'].default=='legacy'
+assert bpy.ops.export.bjs.get_rna_type().properties['ktx_lightmap_divisor_mode'].default=='per-pixel'
 s=bpy.context.scene;s.world.usePBRMaterials=True;s.world.inlineTextures=False
 cube=s.objects['Cube'];cube.data.uv_layers.new(name='UV2')
 color=np.full((32,32,4),255,np.uint8);color[:,:,:3]=128;color[:16,:,3]=128;ktx._write_png(OUT/'albedo.png',color)
@@ -53,3 +56,20 @@ assert linear.max()>60 and np.isfinite(linear).all()
 assert float(error.mean())<.3,float(error.mean())
 (OUT/'result.json').write_text(json.dumps(dict(status='passed',blender=bpy.app.version_string,encoding=entry,decode_mae=float(error.mean()),decode_max_error=float(error.max()),checks=['legacy default','opaque/glass/cutout intent','canonical marker and RGBD metadata','real UASTC RGBA UNORM','nonzero alpha divisor','HDR survives decode']),indent=2))
 print('RGBD_BLENDER_TEST_PASSED',flush=True)
+
+# The optional mode must survive the integrated configuration, preparation and
+# metadata route without changing material opacity, filename or lighting profile.
+wide_options = dict(options, lightmap_divisor_mode='image-wide')
+wide_exporter = JsonExporter()
+wide_exporter.execute(bpy.context, str(OUT/'wide/fixture.babylon'), objects, ktx_options=wide_options)
+assert not wide_exporter.fatalError and not wide_exporter.nErrors, wide_exporter.fatalError
+wide_model = core.read_json(OUT/'wide/fixture.babylon')
+wide_entry = next(t for t in wide_exporter.ktx_report['textures'] if t.get('encoding')=='rgbd-v1')
+wide_node = next(m for m in wide_model['meshes'] if m['name'].startswith('lightmap_'))
+assert wide_entry['rgbd_divisor_mode']==wide_entry['rgbd_encoded_divisor_mode']=='image-wide' and wide_entry['alpha_min']==wide_entry['alpha_max']==4
+assert wide_entry['rgbd_source_peak']==63 and abs(wide_entry['rgbd_image_divisor']-4/255)<1e-8
+assert wide_node['name']==node['name'] and wide_node['metadata']['kadshowLightmapMinDivisor']==4/255
+assert wide_node['metadata']['kadshowLighting']==node['metadata']['kadshowLighting']
+assert wide_entry['codec']=='uastc' and not wide_entry['mipmaps'] and wide_entry['color_space']=='linear'
+assert wide_model['materials']==d['materials']
+print('RGBD_IMAGE_WIDE_BLENDER_TEST_PASSED', flush=True)

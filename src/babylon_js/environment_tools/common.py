@@ -26,6 +26,20 @@ def save_json(path, value):
             time.sleep(0.05 * (attempt + 1))
 
 
+def image_dependency_scope(c):
+    scope = c.get('image_dependency_scope', 'all')
+    if scope not in ('all', 'participants'):
+        raise ValueError('image_dependency_scope must be all or participants')
+    return scope
+
+
+def physical_world_routing(c):
+    routing = c.get('physical_world_routing', 'direct')
+    if routing not in ('direct', 'camera-separated'):
+        raise ValueError('physical_world_routing must be direct or camera-separated')
+    return routing
+
+
 def load_config(path):
     path = Path(path).resolve()
     c = json.loads(path.read_text(encoding='utf8'))
@@ -56,6 +70,19 @@ def load_config(path):
         for key in ('samples','node_samples'):
             if not isinstance(ao.get(key),int) or not 1<=ao[key]<=4096:raise ValueError('AO requires explicit positive '+key)
         if 'ao' not in c['images']:raise ValueError('Missing image binding: ao')
+    from receiver_response import validate_settings
+    validate_settings(c)
+    from physical_colour_adjustment import validate_settings as validate_physical_colour, validate_scene
+    validate_physical_colour(c)
+    validate_scene(c)
+    image_dependency_scope(c)
+    physical_world_routing(c)
+    from camera_views import validate_camera_set
+    validate_camera_set(c)
+    from native_ownership import ownership_method
+    ownership_method(c)
+    from native_recombine import finishing_overrides
+    finishing_overrides(c)
     return c
 
 

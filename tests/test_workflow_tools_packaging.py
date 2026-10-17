@@ -62,13 +62,15 @@ class WorkflowPackagingTests(unittest.TestCase):
             root = Path(temp)
             with zipfile.ZipFile(builder.build(ROOT, root / 'addon.zip')) as package:
                 package.extractall(root / 'installed')
-            for name in ('compare_appearance.py', 'enhance_reference.py'):
+            for name in ('compare_appearance.py', 'enhance_reference.py', 'uv_audit.py',
+                         'decoded_delivery.py', 'native_view_diagnostics.py', 'lightmap_ownership_filter.py'):
                 helper = root / 'installed/babylon_js/workflow_tools' / name
                 command = [sys.executable, '-B']
                 # The enhancement CLI help must not need Pillow, Gradio or a service.
                 if name == 'enhance_reference.py':
                     command.append('-S')
-                result = subprocess.run(command + [str(helper), '--help'], cwd=root,
+                help_args = ['validate', '--help'] if name == 'decoded_delivery.py' else ['--help']
+                result = subprocess.run(command + [str(helper), *help_args], cwd=root,
                                         capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('--output', result.stdout)
@@ -76,7 +78,7 @@ class WorkflowPackagingTests(unittest.TestCase):
 
     def test_scene_audit_modules_preserve_reusable_entry_points(self):
         expected = {
-            'inspect_blender.py': {'inspect_blender', 'inspect_jobs', 'compare_uv_snapshots'},
+            'inspect_blender.py': {'inspect_blender', 'inspect_jobs', 'compare_uv_snapshots', 'snapshot_uv2'},
             'inspect_environment.py': {'inspect_environment'},
         }
         for name, functions in expected.items():

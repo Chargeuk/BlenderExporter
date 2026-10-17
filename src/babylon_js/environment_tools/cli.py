@@ -10,10 +10,27 @@ from pathlib import Path
 
 from common import load_config, save_json, sha
 from reuse import reuse_plan, load_labels
+from camera_views import validate_camera_set
+from native_ownership import ownership_method
 
 HERE = Path(__file__).resolve().parent
 LIGHTMAP = HERE.parent / 'lightmap_tools'
-STAGES = ['preflight', 'geometry', 'bake', 'ownership', 'process', 'ao', 'combine', 'capture', 'env', 'thumbnail', 'snapshot', 'validate']
+STAGES = ['preflight', 'geometry', 'response-capture', 'bake', 'ownership', 'process', 'response', 'ao', 'combine', 'views', 'capture', 'env', 'thumbnail', 'snapshot', 'validate']
+
+
+def requested_stages(command, view_entries, native_recombine=False):
+    stages=list(STAGES) if command=='restore' else STAGES[:STAGES.index(command)+1]
+    if not view_entries:stages=[stage for stage in stages if stage!='views']
+    if native_recombine:
+        if command in STAGES[:STAGES.index('combine')]:raise ValueError('Native recombine requires combine or later')
+        stages=['native-recombine-check']+[stage for stage in stages if stage in STAGES[STAGES.index('combine'):]]
+    return stages
+
+
+def validate_pipeline_config(c):
+    """Saved-preview diagnostics never enter native preparation/bake stages."""
+    if 'saved_preview_diagnostic' in c:
+        raise ValueError('Saved-preview diagnostics must use the direct environment_tools/camera_views.py saved-preview entrypoint in background Blender; do not use cli.py views')
 
 
 def preparation_command(argv):
@@ -66,7 +83,30 @@ def main():
     p.add_argument('--geometry-reference', type=Path, help='Original bake geometry/result.json; required for AO-only reuse')
     p.add_argument('--rebake-ao', action='store_true', help='Regenerate only AO while reusing D/I; implicit for the ao command')
     p.add_argument('--env-converter',type=Path,help='Optional maintained Node convert.cjs; enables ENV conversion')
-    a = p.parse_args(); c = load_config(a.config); root = a.output.resolve()
+    p.add_argument('--recombine-native-from',type=Path,help='Immutable original native candidate; only finishing_overrides may differ')
+    p.add_argument('--original-tool-source-root',type=Path,help='Preserved complete original add-on source plus final-source provenance')
+    a = p.parse_args(); c = load_config(a.config); validate_pipeline_config(c); root = a.output.resolve()
+    view_entries=validate_camera_set(c)
+    if view_entries and c['capture']['views'].get('delivery_contract'):
+        raise ValueError('Use installed workflow_tools/decoded_delivery.py render-views; delivery inspection never runs the bake chain')
+    native_ownership=ownership_method(c)=='native-island-id'
+    native_plan=None
+    if a.recombine_native_from:
+        if not a.original_tool_source_root or a.reuse_lightmaps or a.recombine or a.rebake_ao or a.command in STAGES[:STAGES.index('combine')]:
+            raise ValueError('Native recombine requires original tool source, a combine-or-later command, and no legacy reuse/rebake flags')
+        from native_recombine import validate_original
+        native_plan=validate_original(c,a.recombine_native_from,a.original_tool_source_root)
+    elif a.original_tool_source_root or c.get('finishing_overrides'):
+        raise ValueError('Finishing overrides/original tool source require --recombine-native-from')
+    if native_ownership and a.reuse_lightmaps:
+        raise ValueError('native-island-id ownership requires a fresh candidate with its matching native receipt; --reuse-lightmaps/--recombine is not supported')
+    if a.command=='views' and not view_entries:
+        raise ValueError('views requires an opt-in capture.views.camera_set')
+    response_enabled=c.get('receiver_response',{}).get('enabled',False)
+    if a.command in ('response-capture','response') and not response_enabled:
+        raise ValueError('Enable receiver_response schema_version 1 for response stages')
+    if response_enabled and a.reuse_lightmaps:
+        raise ValueError('receiver_response with --reuse-lightmaps is unsupported; measure current response with a fresh native bake')
     ao_enabled=c.get('ao',{}).get('enabled',False)
     rebake_ao=a.rebake_ao or a.command=='ao'
     if rebake_ao and not ao_enabled:raise ValueError('AO regeneration requires an enabled AO recipe')
@@ -83,10 +123,13 @@ def main():
         raise ValueError('Candidate output must be outside the source environment folder')
     inputs = {str(a.config.resolve()): sha(a.config), c['_source']: sha(c['_source'])}
     dependencies=[HERE.parent/name for name in ('environment_controls.py','env_export.py','lighting_controls.py','lightmap_grading.py','agx_lightmap.py')]
+    if c.get('image_dependency_scope','all')=='participants':
+        dependencies.append(HERE.parent/'workflow_tools/inspect_environment.py')
     for f in sorted(HERE.glob('*.py')) + sorted(LIGHTMAP.glob('*.py')) + dependencies:
         inputs[str(f)] = sha(f)
     for im in c.get('source_images', []):
         f = (source_root/im).resolve(); inputs[str(f)] = sha(f)
+    if native_plan:inputs.update(native_plan['inputs'])
     inputs[str(a.oidn_library.resolve())] = sha(a.oidn_library)
     inputs['reuse_lightmaps']=a.reuse_lightmaps
     inputs['recombine']=recombine
@@ -99,6 +142,11 @@ def main():
             f=(source_root/c['images'][name]).resolve();inputs[str(f)]=sha(f)
     provenance=None
     needs_baked_capture=(a.command!='preflight' and c.get('capture',{}).get('mode','baked')=='baked')
+    needs_baked_views=False
+    if view_entries and (a.command=='restore' or STAGES.index(a.command)>=STAGES.index('views')):
+        view_spec=c['capture']['views']
+        needs_baked_views=any(entry.get('mode',view_spec.get('mode','baked'))=='baked' for entry in view_entries)
+    needs_baked_capture=needs_baked_views if a.command=='views' else needs_baked_capture or needs_baked_views
     needs_baked_thumbnail=(a.command in ('thumbnail','snapshot','validate','restore') and c.get('thumbnail',{}).get('mode','baked')=='baked')
     if a.reuse_lightmaps and not recombine and (needs_baked_capture or needs_baked_thumbnail):
         provenance=(source_root/c.get('combined_provenance',c['images']['combined']+'.provenance.json')).resolve()
@@ -117,6 +165,9 @@ def main():
         manifest = {'schema_version':1, 'inputs':inputs, 'stages':{}, 'quality':c.get('quality','final'), 'accepted':False}
     save_json(manifest_path,manifest)
     for directory in ('sources','masters'): (root/directory).mkdir(exist_ok=True)
+    if native_plan:
+        from native_recombine import copy_verified
+        copy_verified(native_plan,root)
     if provenance:shutil.copyfile(provenance,root/'masters/combined.provenance.json')
     for path in c.get('source_images',[]):
         destination=(root/'source-assets'/path).resolve()
@@ -153,7 +204,8 @@ def main():
         run([a.image_python,LIGHTMAP/'write_linear_exr.py',path],directory/(name+'-exr.log'))
         shutil.copyfile(path.with_suffix('.exr'),root/'masters'/(name+'.exr'))
 
-    requested=STAGES if a.command=='restore' else STAGES[:STAGES.index(a.command)+1]
+    requested=requested_stages(a.command,view_entries,native_plan is not None)
+    if not response_enabled:requested=[x for x in requested if x not in ('response-capture','response')]
     if not ao_enabled:requested=[x for x in requested if x!='ao']
     if not a.env_converter:
         if a.command=='env':raise ValueError('env requires --env-converter')
@@ -186,7 +238,7 @@ def main():
         if name=='preflight' and not a.reuse_lightmaps:
             run([sys.executable,LIGHTMAP/'cli.py','check','--oidn-library',a.oidn_library,
                  '--image-python',a.image_python,'--diagnostics'],stage/'dependencies.log')
-        if name in ('preflight','geometry','reuse-check','bake','ao','combine','capture','env','thumbnail','snapshot'): worker(name,stage)
+        if name in ('preflight','geometry','reuse-check','native-recombine-check','response-capture','bake','ao','combine','views','capture','env','thumbnail','snapshot'): worker(name,stage)
         if name=='geometry' and a.geometry_reference:
             original=json.loads(a.geometry_reference.read_text())
             current=json.loads((stage/'result.json').read_text())
@@ -208,7 +260,15 @@ def main():
             import numpy as np
             from ownership import rasterize
             catalogue=json.loads((root/'bake/islands.json').read_text())
-            raw=np.load(root/'bake/direct_raw.npy');labels,report=rasterize(raw,catalogue)
+            raw=np.load(root/'bake/direct_raw.npy')
+            if native_ownership:
+                from native_ownership import load_native_ids,validate_native_ids
+                from ownership import candidate_diagnostic
+                image,receipt=load_native_ids(c,root,catalogue)
+                labels,report=validate_native_ids(image,catalogue,raw,np.load(root/'bake/indirect_raw.npy'))
+                report['native_receipt_sha256']=sha(root/'bake/native_ownership.provenance.json')
+                report['conservative_candidates']=candidate_diagnostic(labels,catalogue)
+            else:labels,report=rasterize(raw,catalogue)
             np.save(stage/'labels.npy',labels)
             patches=json.loads((root/'bake/metal_patches.json').read_text())
             report['metal_patches']=[]
@@ -235,6 +295,9 @@ def main():
             labels=np.load(root/'ownership/labels.npy')
             ids=np.ones((*labels.shape,4),np.float32);ids[:,:,:3]=labels[:,:,None]
             exr(dilate(ids,labels),'island_ids',stage)
+        if name=='response':
+            from receiver_response import derive
+            derive(c,root,stage,exr)
         if name=='combine':
             import numpy as np
             from ownership import dilate
@@ -243,6 +306,13 @@ def main():
             record=json.loads((stage/'appearance.json').read_text())
             record.update(combined_sha256=sha(root/'masters/combined.exr'),source_sha256=sha(c['_source']),
                           ownership_sha256=sha(labels_path))
+            if native_plan:
+                record['native_recombine_provenance_sha256']=sha(root/'native_recombine.provenance.json')
+                record['original_native_candidate']=native_plan['original_candidate']
+                record['finishing_overrides']=c.get('finishing_overrides',{})
+            if response_enabled:
+                record['receiver_response_provenance_sha256']=sha(root/'response/result.json')
+                record['direct_indirect_inputs']='derived measured receiver response; native transport masters preserved'
             save_json(root/'masters/combined.provenance.json',record)
         if name=='ao':
             import numpy as np
@@ -252,7 +322,12 @@ def main():
             labels=np.load(labels_path,allow_pickle=False);raw=np.load(stage/'ao_raw.npy',allow_pickle=False)
             catalogue=json.loads((stage/'islands.json').read_text())
             saved=json.loads((root/('reuse' if a.reuse_lightmaps else 'bake')/'islands.json').read_text())
-            validate_ownership(labels,saved,catalogue,c['size'])
+            native_ids=None
+            if native_ownership:
+                from native_ownership import load_native_ids,validate_native_ids
+                native_ids,native_receipt=load_native_ids(c,root,saved)
+                validate_native_ids(native_ids,saved,raw)
+            validate_ownership(labels,saved,catalogue,c['size'],native_ids=native_ids)
             if not np.array_equal(raw[:,:,3]>0,labels>0):raise ValueError('AO coverage differs from lighting ownership')
             raw[:,:,:3]=np.clip(raw[:,:,:3],0.,1.)
             exr(dilate(raw,labels),'ao',stage)
@@ -266,6 +341,10 @@ def main():
             for f in ('albedo_uv.exr','albedo_uv.exr.json'): outputs['masters/'+f]=sha(root/'masters'/f)
         if name=='process':
             for f in ('direct_final.exr','indirect_final.exr','island_ids.exr'): outputs['masters/'+f]=sha(root/'masters'/f)
+        if name=='response':
+            for mode in ('direct','indirect'):
+                for variant in ('raw','processed'):
+                    f=mode+'_response_'+variant+'.exr';outputs['masters/'+f]=sha(root/'masters'/f)
         if name=='combine':
             for f in ('combined.exr','combined.provenance.json'):outputs['masters/'+f]=sha(root/'masters'/f)
         if name=='ao':outputs['masters/ao.exr']=sha(root/'masters/ao.exr')

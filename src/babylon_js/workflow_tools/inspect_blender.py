@@ -1,8 +1,9 @@
 """Read-only Blender data audit; execute inside Blender, no third-party imports.
 
 inspect_blender() audits render-eligible meshes in the active view layer.
-Pass object_names to audit an explicit mesh set. No operators, file writes,
-image reloads, pixel reads, modifier evaluation or add-on imports are performed.
+Pass object_names to audit an explicit base-mesh set. snapshot_uv2() separately
+reads evaluated meshes for the explicit intended receiver set. Neither uses
+operators, edits scene data, reloads images, reads pixels or imports the parent add-on.
 """
 from array import array
 import hashlib
@@ -185,6 +186,107 @@ def compare_uv_snapshots(before, after):
     added, removed = sorted(b.keys() - a.keys()), sorted(a.keys() - b.keys())
     return {"unchanged": not (unavailable or changed or added or removed), "changed": changed,
             "unavailable": unavailable, "added": added, "removed": removed}
+
+
+def snapshot_uv2(object_names, *, uv='SimpleBake', uv1=None, expected_uv_order=None,
+                 selection_metadata=None, expected_scene=None):
+    """Extract an explicit evaluated receiver set without operators or data edits.
+
+    Caller owns membership: include the connected bake floor and omit its runtime
+    replacements/helpers/glass in project selectors. This helper does not infer roles.
+    Load uv_audit by file path so inspection works from a packaged installation.
+    """
+    import importlib.util
+    from pathlib import Path
+    import numpy as np
+    if isinstance(object_names, str):
+        raise TypeError('object_names must be an explicit iterable of mesh names')
+    supplied = list(object_names)
+    if not supplied or len(set(supplied)) != len(supplied):
+        raise ValueError('Provide a nonempty, duplicate-free intended receiver set')
+    names = sorted(supplied)
+    scene = bpy.context.scene
+    if expected_scene is not None and scene.name != expected_scene:
+        raise ValueError('UV snapshot active scene differs from the expected physical scene')
+    invalid = [name for name in names if name not in scene.objects or scene.objects[name].type != 'MESH']
+    if invalid:
+        raise ValueError('Unknown or non-mesh intended UV participants: '+', '.join(invalid))
+    jobs = inspect_jobs()
+    if (bpy.context.mode != 'OBJECT' or any(value is True for value in jobs['native'].values())
+            or any(state['is_baking'] is True for state in jobs['simplebake_states'])):
+        raise ValueError('UV snapshot requires Object Mode and no active/stale bake or render job')
+    path = Path(__file__).with_name('uv_audit.py')
+    spec = importlib.util.spec_from_file_location('bjs_uv_audit_snapshot', path)
+    core = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(core)
+    deps = bpy.context.evaluated_depsgraph_get()
+    records, triangles = [], []
+    def digest(parts):
+        result = hashlib.sha256()
+        for name, values, dtype in parts:
+            values = np.asarray(values, dtype=dtype)
+            result.update(name.encode())
+            result.update(str(values.shape).encode())
+            result.update(values.tobytes())
+        return result.hexdigest()
+    for name in names:
+        obj = scene.objects[name]
+        evaluated = obj.evaluated_get(deps)
+        mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=deps)
+        try:
+            order = [layer.name for layer in mesh.uv_layers]
+            if expected_uv_order is not None and order != list(expected_uv_order):
+                raise ValueError('Evaluated UV channel order differs on '+name+': '+str(order))
+            primary = uv1 or (order[0] if order else '')
+            if uv not in order or primary not in order or uv == primary:
+                raise ValueError('UV snapshot requires distinct existing UV1 and UV2 on '+name)
+            mesh.calc_loop_triangles()
+            matrix = obj.matrix_world
+            normal_matrix = matrix.to_3x3().inverted().transposed()
+            world_vertices = [list(matrix @ vertex.co) for vertex in mesh.vertices]
+            world_normals = [list((normal_matrix @ normal.vector).normalized()) for normal in mesh.corner_normals]
+            loop_vertices = [loop.vertex_index for loop in mesh.loops]
+            polygons = [(poly.loop_start, poly.loop_total, poly.use_smooth, poly.material_index) for poly in mesh.polygons]
+            primary_values = [list(value.uv) for value in mesh.uv_layers[primary].data]
+            uv_values = [list(value.uv) for value in mesh.uv_layers[uv].data]
+            if not np.isfinite(np.asarray(uv_values)).all() or not np.isfinite(np.asarray(primary_values)).all():
+                raise ValueError('Non-finite evaluated UV coordinates on '+name)
+            records.append({'object': name, 'base_mesh': obj.data.name,
+                'evaluated_vertices': len(mesh.vertices), 'evaluated_loops': len(mesh.loops),
+                'evaluated_triangles': len(mesh.loop_triangles), 'uv_order': order, 'uv1': primary, 'uv2': uv,
+                'world_geometry_sha256': digest([('vertices', world_vertices, '<f8'), ('normals', world_normals, '<f8'),
+                    ('loops', loop_vertices, '<i4'), ('polygons', polygons, '<i4'), ('matrix', list(matrix), '<f8')]),
+                'uv1_sha256': digest([(primary, primary_values, '<f4')]),
+                'uv2_sha256': digest([(uv, uv_values, '<f4')])})
+            for triangle in mesh.loop_triangles:
+                triangles.append({'object': name, 'triangle': triangle.index, 'polygon': triangle.polygon_index,
+                    'loops': list(triangle.loops), 'vertices': list(triangle.vertices),
+                    'uv': [uv_values[index] for index in triangle.loops]})
+        finally:
+            evaluated.to_mesh_clear()
+    for row, chart in zip(triangles, core.chart_ids(triangles)):
+        row['chart'] = chart
+    source_path = Path(bpy.data.filepath) if bpy.data.filepath else None
+    file_hash = None
+    if source_path and source_path.is_file():
+        source_hash = hashlib.sha256()
+        with source_path.open('rb') as stream:
+            for block in iter(lambda: stream.read(1024*1024), b''):
+                source_hash.update(block)
+        file_hash = source_hash.hexdigest()
+    return {'schema_version': 1, 'kind': 'evaluated-uv2-triangle-snapshot', 'triangles': triangles,
+        'objects': records, 'provenance': {'file': bpy.data.filepath, 'source_file_sha256': file_hash,
+            'scene': scene.name, 'view_layer': bpy.context.view_layer.name, 'blender_version': bpy.app.version_string,
+            'receiver_names': names, 'receiver_selector_metadata': selection_metadata,
+            'uv2': uv, 'expected_uv_order': list(expected_uv_order) if expected_uv_order is not None else None,
+            'geometry_uv1_identity_sha256': hashlib.sha256(json.dumps(
+                [(row['object'], row['world_geometry_sha256'], row['uv1_sha256']) for row in records], separators=(',', ':')).encode()).hexdigest(),
+            'uv2_identity_sha256': hashlib.sha256(json.dumps(
+                [(row['object'], row['uv2_sha256']) for row in records], separators=(',', ':')).encode()).hexdigest(),
+            'snapshot_helper_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'uv_audit_helper_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+            'read_only': True,
+            'limits': 'Evaluated object meshes only; unrealized instances are not separately enumerated. Exact UV/geometry edge chart connectivity may differ from bake catalogue seam-rounding. Actual native bake coverage remains separate.'}}
 
 
 if __name__ == '__main__':

@@ -46,6 +46,9 @@ def relink(c, root):
     for name, filename in [('direct','direct_final.exr'), ('indirect','indirect_final.exr'),
                            ('island_ids','island_ids.exr'), ('combined','combined.exr')]:
         replacements[binding(c, name)] = root/'masters'/filename
+    if c.get('receiver_response',{}).get('enabled'):
+        for name in ('direct','indirect'):
+            replacements[binding(c,name)] = root/'masters'/(name+'_response_processed.exr')
     for im in list(bpy.data.images):
         if im.source == 'FILE' and im.filepath:
             target = replacements.get(Path(bpy.path.abspath(im.filepath)).resolve())
@@ -79,7 +82,8 @@ def raw_pixels(image):
 
 
 def setup(c):
-    s=bpy.context.scene; s.render.engine='CYCLES'
+    from physical_colour_adjustment import select_scene
+    s=select_scene(c); s.render.engine='CYCLES'
     s.cycles.use_adaptive_sampling=False; s.cycles.use_denoising=False; s.cycles.use_animated_seed=False
     s.cycles.diffuse_bounces=c.get('diffuse_bounces',8);s.cycles.max_bounces=c.get('total_bounces',12)
     s.cycles.sample_clamp_direct=0;s.cycles.sample_clamp_indirect=0
@@ -95,6 +99,90 @@ def setup(c):
         if not any(d.use for d in prefs.devices):raise ValueError('No requested compute device found')
         s.cycles.device='GPU'
     return s
+
+
+def image_dependencies(c):
+    """Conservative node-image closure; ignore historical data only by explicit recipe."""
+    from common import image_dependency_scope
+    scope = image_dependency_scope(c)
+    scene = bpy.context.scene
+    roots = {'scene': scene.name, 'objects': {}, 'materials': [],
+             'world': scene.world.name if scene.world else None,
+             'preview_material': c.get('preview_material')}
+    if scope == 'all':
+        images = list(bpy.data.images)
+    else:
+        # Reuse the installed audit's cycle-safe recursive collector. This scans
+        # every node in participating trees, including disconnected image nodes.
+        from babylon_js.workflow_tools.inspect_environment import _images_from_tree
+        materials = set()
+        for role in ('receivers', 'contributors', 'glass', 'visible_emitters'):
+            objects = select(c, role)
+            roots['objects'][role] = [o.name for o in objects]
+            materials.update(slot.material for o in objects for slot in o.material_slots if slot.material)
+        preview = bpy.data.materials.get(c.get('preview_material', ''))
+        if preview:
+            materials.add(preview)
+        roots['materials'] = sorted(m.name for m in materials)
+        images = set()
+        for material in materials:
+            images.update(_images_from_tree(material.node_tree))
+        images.update(_images_from_tree(scene.world.node_tree if scene.world else None))
+        images = sorted(images, key=lambda image: image.name)
+    required = set(images)
+    def row(image):
+        return {'name': image.name, 'source': image.source,
+                'path': str(Path(bpy.path.abspath(image.filepath)).resolve()) if image.filepath else '',
+                'packed': bool(image.packed_file)}
+    report = {'scope': scope, 'roots': roots,
+        'required_images': [row(image) for image in sorted(images, key=lambda image: image.name)],
+        'ignored_images': [dict(row(image), reason='Outside selected participant material trees, active scene World and configured preview material; retained saved data, ignored only for native preparation')
+                           for image in sorted(bpy.data.images, key=lambda image: image.name) if image not in required],
+        'limits': ('All saved image datablocks; existing FILE-path declaration checks are unchanged' if scope == 'all' else
+                   'Conservative recursive scan includes disconnected nodes in selected participant material trees, active scene World and configured preview material; does not trace active sockets or read non-node HDR/capture metadata. Ignored saved datablocks are retained.'),
+        'file_check': 'Existing existence/declaration checks apply to unpacked FILE images with filepaths; packed and generated handling is unchanged'}
+    return images, report
+
+
+def check_physical_world_routing(c, controls, output):
+    """Validate only direct Lighting or the explicitly opted exact camera-ray split."""
+    from common import physical_world_routing
+    requested = physical_world_routing(c)
+    surface = output.inputs['Surface']
+    direct = bool(surface.links and surface.links[0].from_socket == controls.outputs['Lighting'])
+    if requested == 'direct':
+        # Preserve the existing default's direct-only rule and error text.
+        if not direct:
+            raise ValueError('Physical baking requires the World Lighting output')
+        return {'requested': requested, 'route': 'direct', 'controls': controls.name, 'active_output': output.name}
+    relevant = [controls, output]
+    if direct:
+        route = 'direct'
+        mix = ray = None
+    else:
+        message = 'camera-separated routing requires Lighting -> Mix input 1, Visible Sky -> input 2, direct Is Camera Ray -> Fac, Mix -> active World Surface'
+        if len(surface.links) != 1:
+            raise ValueError(message)
+        mix = surface.links[0].from_node
+        if mix.type != 'MIX_SHADER' or surface.links[0].from_socket != mix.outputs[0]:
+            raise ValueError(message)
+        if any(len(mix.inputs[i].links) != 1 for i in (0, 1, 2)):
+            raise ValueError(message)
+        if (mix.inputs[1].links[0].from_socket != controls.outputs['Lighting']
+                or mix.inputs[2].links[0].from_socket != controls.outputs['Visible Sky']):
+            raise ValueError(message)
+        ray = mix.inputs[0].links[0].from_node
+        if ray.type != 'LIGHT_PATH' or mix.inputs[0].links[0].from_socket != ray.outputs['Is Camera Ray']:
+            raise ValueError(message)
+        relevant.extend((mix, ray))
+        route = 'camera-separated'
+    if any(node.mute for node in relevant):
+        raise ValueError('Physical World routing contains a muted relevant node')
+    return {'requested': requested, 'route': route, 'controls': controls.name, 'active_output': output.name,
+            'mix_shader': mix.name if mix else None, 'light_path': ray.name if ray else None,
+            'noncamera_source': 'Lighting', 'camera_source': 'Visible Sky' if mix else 'Lighting',
+            'factor': 'Is Camera Ray' if ray else None,
+            'validation': 'Exact direct links and same controls node; no relevant muted route nodes; no rewiring performed'}
 
 
 def preflight(c):
@@ -127,7 +215,8 @@ def preflight(c):
     declared.update((root/'source-assets'/p).resolve() for p in c.get('source_images',[]))
     declared.update((root/'sources'/Path(p['path']).name).resolve() for p in c.get('downloads',[]))
     generated.update(root/'masters'/p for p in ('direct_final.exr','indirect_final.exr','island_ids.exr','combined.exr'))
-    for im in bpy.data.images:
+    required_images,image_scope=image_dependencies(c)
+    for im in required_images:
         if im.source=='FILE' and im.filepath and not im.packed_file:
             path=Path(bpy.path.abspath(im.filepath)).resolve()
             if not path.is_file() and path not in generated:missing.append(str(path))
@@ -136,8 +225,7 @@ def preflight(c):
     node=world_tools.find_controls(s.world)
     if not node:raise ValueError('Connect the supported KaDshow Environment Controls World group')
     output=next(n for n in s.world.node_tree.nodes if n.type=='OUTPUT_WORLD' and n.is_active_output)
-    if not output.inputs['Surface'].links or output.inputs['Surface'].links[0].from_socket!=node.outputs['Lighting']:
-        raise ValueError('Physical baking requires the World Lighting output')
+    world_routing=check_physical_world_routing(c,node,output)
     if c.get('preview_material') not in bpy.data.materials:raise ValueError('Missing configured preview material')
     if c.get('ao',{}).get('enabled'):
         from babylon_js.lightmap_grading import upgrade
@@ -145,14 +233,18 @@ def preflight(c):
         # This worker is disposable; the saved authoring scene is never changed.
         upgrade(bpy.data.materials[c['preview_material']],uv=c.get('uv','SimpleBake'))
     resolution=check_preview_resolution(c)
-    return {'receiver_count':len(receivers),'triangles':triangles,'receivers':[o.name for o in receivers],
+    return {'scene':s.name,'receiver_count':len(receivers),'triangles':triangles,'receivers':[o.name for o in receivers],
         'contributors':[o.name for o in contributors],'visible_only_emitters':[o.name for o in emitters],'excluded_glass':[o.name for o in select(c,'glass')],
-        'world_controls':world_tools.settings(node),'missing_source_images':missing,'blender_version':bpy.app.version_string,
-        'samples':c['samples'],'quality':c.get('quality','final'),'preview_resolution':resolution}
+        'world_controls':world_tools.settings(node),'physical_world_routing':world_routing,
+        'missing_source_images':missing,'blender_version':bpy.app.version_string,
+        'samples':c['samples'],'quality':c.get('quality','final'),'preview_resolution':resolution,
+        'image_dependencies':image_scope}
 
 
 def evaluate_receivers(c):
     s=bpy.context.scene;deps=bpy.context.evaluated_depsgraph_get(); copies=[];catalogue=[]
+    from native_ownership import ownership_method, attach_face_ids
+    native_ids=ownership_method(c)=='native-island-id'
     for o in select(c,'receivers'):
         ev=o.evaluated_get(deps)
         mesh=bpy.data.meshes.new_from_object(ev,preserve_all_data_layers=True,depsgraph=deps)
@@ -170,7 +262,12 @@ def evaluate_receivers(c):
                 else:edges[key]=p.index
         groups={}
         for tri in mesh.loop_triangles:groups.setdefault(find(tri.polygon_index),[]).append([list(uv.data[q].uv) for q in tri.loops])
-        for key,tris in groups.items():catalogue.append({'id':len(catalogue)+1,'object':o.name,'polygon_root':key,'triangles':tris})
+        group_ids={}
+        for key,tris in groups.items():
+            identity=len(catalogue)+1
+            group_ids[key]=identity
+            catalogue.append({'id':identity,'object':o.name,'polygon_root':key,'triangles':tris})
+        if native_ids:attach_face_ids(mesh,[group_ids[find(p.index)] for p in mesh.polygons])
         normal_matrix=o.matrix_world.to_3x3().inverted().transposed()
         attr=mesh.attributes.new('_environment_world_normal','FLOAT_VECTOR','CORNER')
         for i,n in enumerate(mesh.corner_normals):attr.data[i].vector=(normal_matrix@n.vector).normalized()
@@ -187,7 +284,19 @@ def target_image(c,materials):
 
 
 def bake(c,root,stage):
-    s=setup(c);preflight(c)
+    from physical_colour_adjustment import physical_materials
+    from receiver_response_capture import verify_physical_capture
+    setup(c);preflight(c)
+    with physical_materials(c) as tint:
+        verify_physical_capture(c,root,tint)
+        result=_bake(c,root,stage,tint)
+        result.update(scene=bpy.context.scene.name,physical_colour_adjustment=tint)
+        return result
+
+
+def _bake(c,root,stage,tint=None):
+    s=bpy.context.scene
+    if tint is not None:save_json(stage/'physical_colour_adjustment.json',tint)
     receivers=select(c,'receivers');contributors=select(c,'contributors'); lights=select(c,'bake_lights')
     from babylon_js.agx_lightmap import bake_albedo
     bake_albedo(bpy.context,receivers,root/'masters/albedo_uv.exr',c['size'],c.get('uv','SimpleBake'))
@@ -203,6 +312,7 @@ def bake(c,root,stage):
         if c.get('quality')=='final' and mode=='INDIRECT':
             assert s.cycles.samples==2048, 'Final indirect must be exactly 2048 fixed samples'
         effective_records.append(dict(phase=phase,pass_name=mode,receivers=names,
+            scene=s.name,physical_colour_adjustment=tint,
             pass_filter=sorted(passes or {mode}),
             preserve_metal_diffuse_weight=c.get('preserve_metal_diffuse_weight',False),
             material_proof=material_proof,
@@ -236,6 +346,12 @@ def bake(c,root,stage):
         save_json(stage/'progress.json',{'phase':'baking','pass':mode,'samples':s.cycles.samples,'time':time.time()})
         bpy.ops.object.bake(type='DIFFUSE',pass_filter={mode},margin=0,use_clear=True,use_selected_to_active=False,uv_layer=c.get('uv','SimpleBake'))
         np.save(stage/(mode.lower()+'_raw.npy'),raw_pixels(im))
+    native_ownership=None
+    from native_ownership import ownership_method
+    if ownership_method(c)=='native-island-id':
+        from native_ownership import save_native_bake
+        save_json(stage/'progress.json',{'phase':'native_ownership','pass':'EMIT','samples':1,'time':time.time()})
+        native_ownership=save_native_bake(c,root,stage,proxy,catalogue)
     # Metallic receiving cap: restore other objects' actual materials for every local bake.
     bpy.data.objects.remove(proxy,do_unlink=True)
     for o in receivers:o.hide_render=False
@@ -312,7 +428,9 @@ def bake(c,root,stage):
             for obj,mesh in transport_meshes.items():
                 assert obj.data==mesh and tuple(obj.data.materials)==transport_materials[obj], 'Transport materials changed: '+obj.name
     save_json(stage/'metal_patches.json',metadata)
-    return {'joined_normal_max_error':err,'island_count':len(catalogue),'metal_receiver_count':len(caps),'samples':c['samples']}
+    result={'joined_normal_max_error':err,'island_count':len(catalogue),'metal_receiver_count':len(caps),'samples':c['samples']}
+    if native_ownership is not None:result['native_ownership']=native_ownership
+    return result
 
 
 def clone_tree(tree):
@@ -379,9 +497,20 @@ def reuse_check(c,root):
             'note':'Caller must verify unchanged physical source/lighting against bake provenance.'}
 
 
+def capture_denoise(spec,thumbnail=False):
+    """Validate the optional thumbnail render filter; HDR capture stays raw."""
+    denoise=spec.get('denoise',False)
+    if not isinstance(denoise,bool):
+        raise ValueError('Capture/thumbnail denoise must be a boolean')
+    if denoise and not thumbnail:
+        raise ValueError('HDR capture denoise must remain false; use thumbnail.denoise for JPEG thumbnails')
+    return denoise if thumbnail else False
+
+
 def capture(c,root,stage,thumbnail=False,*,prepare_only=False):
-    s=setup(c);receivers=select(c,'receivers');glass=select(c,'glass')
     spec=c['thumbnail' if thumbnail else 'capture']
+    denoise=capture_denoise(spec,thumbnail)
+    s=setup(c);receivers=select(c,'receivers');glass=select(c,'glass')
     mode=spec.get('mode','baked')
     if mode not in ('baked','physical'):raise ValueError('Capture mode must be baked or physical')
     if mode=='baked':
@@ -411,6 +540,7 @@ def capture(c,root,stage,thumbnail=False,*,prepare_only=False):
         camera.rotation_euler=(math.pi/2,0,0);data.type='PANO';data.panorama_type='EQUIRECTANGULAR'
     size=spec.get('size',512 if thumbnail else 4096);s.render.resolution_x=size;s.render.resolution_y=size if thumbnail else size//2
     s.render.resolution_percentage=100;s.render.film_transparent=False;s.cycles.samples=spec.get('samples',64 if thumbnail else 32)
+    s.cycles.use_denoising=denoise
     s.render.use_border=False
     s.render.image_settings.file_format='JPEG' if thumbnail else 'OPEN_EXR'
     s.render.image_settings.color_mode='RGB';s.render.image_settings.color_depth='8' if thumbnail else '32'
@@ -430,7 +560,8 @@ def capture(c,root,stage,thumbnail=False,*,prepare_only=False):
     pixels=oiio.ImageBuf(str(path)).get_pixels(oiio.FLOAT)
     if not np.isfinite(pixels).all():raise ValueError('Capture contains non-finite pixels')
     return {'mode':mode,'visible_emitters':[o.name for o in emitters],'world_output':branch,'position':list(camera.location),'rotation':list(camera.rotation_euler),
-        'samples':s.cycles.samples,'dimensions':[s.render.resolution_x,s.render.resolution_y],'rays':rays,
+        'samples':s.cycles.samples,'denoise':bool(s.cycles.use_denoising),'adaptive':bool(s.cycles.use_adaptive_sampling),
+        'dimensions':[s.render.resolution_x,s.render.resolution_y],'rays':rays,
         'rgb_min':float(pixels[:,:,:3].min()),'rgb_max':float(pixels[:,:,:3].max()),'rgb_mean':float(pixels[:,:,:3].mean())}
 
 
@@ -439,8 +570,25 @@ def main():
     args=sys.argv[sys.argv.index('--')+1:];config,command,rootpath,stagepath=args[:4]
     c=load_config(config);root=Path(rootpath);stage=Path(stagepath);c['_candidate']=str(root)
     if Path(bpy.data.filepath).resolve()!=Path(c['_source']):raise ValueError('Wrong source scene opened')
+    from physical_colour_adjustment import select_scene
+    select_scene(c)
     source_hash=sha(c['_source']);relink(c,root)
+    finishing=None
+    if c.get('finishing_overrides'):
+        from native_recombine import apply_finishing
+        check_preview_resolution(c)
+        finishing=apply_finishing(c)
+    if (root/'native_recombine.provenance.json').is_file():
+        from native_recombine import verify_copied
+        verify_copied(c,root)
     if command=='preflight':result=preflight(c)
+    elif command=='native-recombine-check':
+        from native_recombine import verify_copied
+        result=verify_copied(c,root)
+        check_preview_resolution(c)
+        from ao import geometry_identity
+        if geometry_identity(c)['geometry_sha256']!=result['geometry_sha256']:
+            raise ValueError('Current native recombine geometry/UV/sampler identity differs')
     elif command=='geometry':
         from ao import geometry_identity
         result=geometry_identity(c)
@@ -448,8 +596,16 @@ def main():
         from ao import bake as bake_ao
         result=bake_ao(c,root,stage)
     elif command=='reuse-check':result=reuse_check(c,root)
+    elif command=='response-capture':
+        from receiver_response_capture import capture as capture_response
+        result=capture_response(c,root,stage)
     elif command=='bake':result=bake(c,root,stage)
     elif command=='combine':result=flatten(c,root,stage)
+    elif command in ('views','delivery-views'):
+        if bool(c['capture']['views'].get('delivery_contract'))!=(command=='delivery-views'):
+            raise ValueError('Delivery view contract requires dedicated delivery-views command')
+        from camera_views import capture_views
+        result=capture_views(c,root,stage)
     elif command in ('capture','thumbnail'):result=capture(c,root,stage,command=='thumbnail')
     elif command=='env':
         from babylon_js.env_export import export_environment
@@ -469,6 +625,8 @@ def main():
         import OpenImageIO as oiio
         rows=[]
         files=('direct_final.exr','indirect_final.exr','island_ids.exr','combined.exr')
+        if c.get('receiver_response',{}).get('enabled'):
+            files+=tuple(mode+'_response_'+variant+'.exr' for mode in ('direct','indirect') for variant in ('raw','processed'))
         if c.get('ao',{}).get('enabled'):files+=('ao.exr',)
         for filename in files:
             pixels=oiio.ImageBuf(str(root/'masters'/filename)).get_pixels(oiio.FLOAT)
@@ -482,7 +640,8 @@ def main():
                 'note':'Regenerated candidates; visual review is required before promotion.'}
     else:raise ValueError('Unknown worker command')
     if sha(c['_source'])!=source_hash:raise RuntimeError('Authoring file changed during processing')
-    result.update(status='passed',source_sha256=source_hash,scene_unchanged_on_disk=True)
+    if finishing is not None:result['finishing_overrides']=finishing
+    result.update(status='passed',source_sha256=source_hash,scene=bpy.context.scene.name,scene_unchanged_on_disk=True)
     save_json(stage/'result.json',result)
     print('ENVIRONMENT_STAGE_PASSED '+command,flush=True)
 

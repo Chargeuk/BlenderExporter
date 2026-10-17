@@ -20,7 +20,7 @@ def helper_path(override=''):
     configured = getattr(addon.preferences, 'env_converter_script', '') if addon else ''
     if configured:
         return Path(bpy.path.abspath(configured)).resolve()
-    return Path(__file__).resolve().parents[2] / 'tools' / 'env-converter' / 'convert.cjs'
+    return Path(__file__).resolve().parent / 'workflow_tools' / 'env_converter' / 'convert.cjs'
 
 
 @lru_cache(maxsize=8)

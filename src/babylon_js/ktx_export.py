@@ -17,6 +17,11 @@ def process_options():
     return {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
 
 
+def colour_adjustment_codec(options):
+    """Keep the installed helper API while honoring upstream INHERIT settings."""
+    return core.colour_codec(options)
+
+
 @lru_cache(maxsize=8)
 def _probe(path, modified):
     try:
@@ -84,13 +89,19 @@ def prepare_blender(spec, directory):
     if not np.isfinite(array).all():
         raise ValueError('Non-finite texture pixels: ' + str(source))
     source_dimensions = [width, height]
-    array = core.resize_lightmap(array, spec, hdr)
+    ownership_report = directory/(Path(spec['output']).stem+'_ownership_filter.json')
+    array = core.resize_lightmap(array, spec, hdr, owner_report_path=ownership_report)
     height, width = array.shape[:2]
     metrics = {}
+    if spec.get('owner_aware') is not None:
+        metrics['owner_aware'] = dict(report=str(ownership_report), sha256=core.sha(ownership_report),
+                                     context_proof=spec['owner_aware_context'])
     if spec.get('encoding') == 'rgbd-v1':
         if not hdr:
             raise ValueError('RGBD lightmaps require a linear HDR/EXR source')
-        pixels, metrics = core.encode_rgbd(array[:, :, :3], fixed_divisor=spec.get('rgbd_fixed_divisor', False))
+        pixels, rgbd_metrics = core.encode_rgbd(array[:, :, :3], spec.get('rgbd_divisor_mode', 'per-pixel'),
+            fixed_divisor=spec.get('rgbd_fixed_divisor', False))
+        metrics.update(rgbd_metrics)
         if spec.get('rgbd_region_policy'):
             original = pixels.copy()
             pixels, selected, region = core.encode_rgbd_regions(array[:, :, :3], original, spec['rgbd_region_policy'])
@@ -269,6 +280,7 @@ def _make_config(raw_model, work, options, context=None, objects=()):
     """Infer safe material defaults; lightmap input is explicit, never guessed from names."""
     import bpy
     model = core.read_json(raw_model)
+    divisor_mode = core.rgbd_divisor_mode(options.get('lightmap_divisor_mode', 'per-pixel'))
     normalization = options.get('lightmap_agx_range_normalization')
     if normalization is not None:
         from .agx_lightmap import RANGE_NORMALIZATION
@@ -337,6 +349,15 @@ def _make_config(raw_model, work, options, context=None, objects=()):
         if encoding not in ('legacy', 'rgbd-v1'):
             raise ValueError('Unsupported lightmap encoding: ' + str(encoding))
         rgbd = encoding == 'rgbd-v1'
+        if not rgbd and divisor_mode != 'per-pixel':
+            raise ValueError('Image-wide RGBD divisor requires rgbd-v1 encoding')
+        owner_setting = options.get('lightmap_owner_aware')
+        owner_proof = None
+        if owner_setting is not None:
+            if not rgbd or not options.get('lightmap_agx', False):
+                raise ValueError('Owner-aware delivery requires AgX compensated RGBD export')
+            from .workflow_tools.lightmap_ownership_filter import validate_context
+            owner_proof = validate_context(owner_setting, context, source)
         artist_profile = normalization_marker(model, marker)[1] if normalization else None
         if options.get('lightmap_agx', False):
             if not rgbd:
@@ -356,6 +377,13 @@ def _make_config(raw_model, work, options, context=None, objects=()):
                           size=core.lightmap_size(options.get('lightmap_size', 0)),
                           flip_y=options.get('flip_y', True), color_space='linear' if rgbd else 'srgb',
                           codec='uastc', mipmaps=False, alpha='preserve' if rgbd else 'discard'))
+        if rgbd:
+            specs[-1]['rgbd_divisor_mode'] = divisor_mode
+        if owner_setting is not None:
+            specs[-1]['owner_aware'] = owner_setting
+            specs[-1]['owner_aware_context'] = owner_proof
+    elif divisor_mode != 'per-pixel':
+        raise ValueError('Image-wide RGBD divisor requires an exported RGBD lightmap')
     region_policy = options.get('lightmap_region_policy')
     if region_policy:
         if not lightmap or encoding != 'rgbd-v1':
@@ -374,6 +402,29 @@ def _make_config(raw_model, work, options, context=None, objects=()):
         bpy.data.images.remove(prepared)
     return dict(version=1, output_dir=str(work / 'converted'),
                 models=[dict(source=str(raw_model), output=raw_model.name)], textures=specs)
+
+
+def final_delivery_files(package, destination, model_name):
+    """Prove the final staged bytes, after all model/asset transformations.
+
+    Paths name their publication destinations; hashes come from the package
+    that publish_package verifies and copies. The report itself is written
+    afterwards, avoiding a self-referential report hash.
+    """
+    package = Path(package).resolve()
+    destination = Path(destination).resolve()
+    model = package / model_name
+    if not model.is_file() or not model.resolve().is_relative_to(package):
+        raise ValueError('Missing final packaged model: ' + str(model))
+    records = []
+    for source in sorted(p for p in package.rglob('*') if p.is_file()):
+        if not source.resolve().is_relative_to(package):
+            raise ValueError('Final packaged asset escapes package: ' + str(source))
+        target = destination / source.relative_to(package)
+        if not target.resolve().is_relative_to(destination):
+            raise ValueError('Final delivery path escapes destination: ' + str(target))
+        records.append(dict(path=str(target), sha256=core.sha(source), bytes=source.stat().st_size))
+    return records
 
 
 def publish_package(package, destination, backup):
@@ -538,7 +589,9 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
                 shutil.copy2(file, package / file.name)
         summary = dict(status='passed', ktx=message, staging=str(work), options=options,
                        material_multipliers=exporter.material_options,
-                       textures=result['textures'], model=str(target), changes=result.get('changes', []))
+                       textures=result['textures'], model=str(target), changes=result.get('changes', []),
+                       delivery_files=final_delivery_files(package, target.parent, target.name),
+                       delivery_files_proof_stage='final-package-after-skybox-environment-and-reference-copy')
         if spatial_report:
             summary['spatial_lighting'] = spatial_report
         if volume_report:

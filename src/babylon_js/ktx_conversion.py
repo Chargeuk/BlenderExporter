@@ -50,16 +50,20 @@ def lightmap_size(value):
     return value
 
 
-def resize_lightmap(array, spec, hdr):
+def resize_lightmap(array, spec, hdr, *, owner_report_path=None):
     """Area-average linear light before RGBD/gamma encoding; never upscale."""
     import numpy as np
     target = lightmap_size(spec.get('size', 0))
     h, w = array.shape[:2]
     if not target:
+        if spec.get('owner_aware') is not None:
+            raise ValueError('Owner-aware reduction requires an explicit smaller target size')
         return array
     if h != w:
         raise ValueError('A fixed lightmap size requires a square source')
     if target >= w:
+        if spec.get('owner_aware') is not None:
+            raise ValueError('Owner-aware reduction requires an explicit smaller target size')
         return array
     result = np.asarray(array, dtype=np.float32).copy()
     srgb = not hdr and spec['color_space'] == 'srgb'
@@ -83,23 +87,50 @@ def resize_lightmap(array, spec, hdr):
     if srgb:
         rgb = result[..., :3]
         result[..., :3] = np.where(rgb <= .0031308, rgb * 12.92, 1.055 * np.maximum(rgb, 0) ** (1 / 2.4) - .055)
+    if spec.get('owner_aware') is not None:
+        if not hdr or spec.get('encoding') != 'rgbd-v1' or spec.get('color_space') != 'linear':
+            raise ValueError('Owner-aware reduction requires linear HDR RGBD lightmap input')
+        import importlib.util
+        path = Path(__file__).parent/'workflow_tools/lightmap_ownership_filter.py'
+        definition = importlib.util.spec_from_file_location('_ktx_owner_filter', path)
+        helper = importlib.util.module_from_spec(definition)
+        definition.loader.exec_module(helper)
+        result = helper.prepare(np.asarray(array, dtype=np.float32), result, spec['owner_aware'],
+                                report_path=owner_report_path, context_proof=spec.get('owner_aware_context'))
     return result
 
 
-def encode_rgbd(rgb, *, fixed_divisor=False):
+def rgbd_divisor_mode(value='per-pixel'):
+    if value not in ('per-pixel', 'image-wide'):
+        raise ValueError('Unsupported RGBD divisor mode: ' + str(value))
+    return value
+
+
+def encode_rgbd(rgb, divisor_mode='per-pixel', *, fixed_divisor=False):
     """rgbd-v1: Babylon 7.27 default gamma2.2 RGBD in RGBA8 UNORM."""
     import numpy as np
+    divisor_mode = rgbd_divisor_mode(divisor_mode)
+    # Accept the upstream keyword and the existing image-wide recipe spelling.
+    if fixed_divisor:
+        divisor_mode = 'image-wide'
     rgb = np.asarray(rgb, dtype=np.float32)
     if not np.isfinite(rgb).all() or np.any(rgb < 0) or np.any(rgb > 255):
         raise ValueError('RGBD requires finite nonnegative linear RGB in [0,255]; source is not clipped')
     peak = np.maximum(rgb.max(axis=-1), 1e-7)
     if fixed_divisor: peak = np.full_like(peak, peak.max())
     divisor = np.minimum(np.floor(np.maximum(255.0 / peak, 1.0)), 255.0) / 255.0
+    if divisor_mode == 'image-wide':
+        # A uniform alpha floor avoids lossy alpha becoming a radiance multiplier.
+        # Derive it after resizing from the whole accepted RGB image, never a crop.
+        divisor = np.full(peak.shape, divisor.min(), dtype=np.float32)
     encoded = np.concatenate((np.power(np.clip(rgb * divisor[..., None], 0, 1), 1 / 2.2), divisor[..., None]), axis=-1)
     pixels = np.rint(encoded * 255).astype(np.uint8)
     restored = np.power(pixels[..., :3].astype(np.float32) / 255, 2.2) / (pixels[..., 3:4].astype(np.float32) / 255)
     error = np.abs(restored - rgb)
-    return pixels, dict(linear_min=float(rgb.min()), linear_max=float(rgb.max()),
+    return pixels, dict(rgbd_encoded_divisor_mode=divisor_mode, rgbd_source_peak=float(rgb.max()),
+        rgbd_image_divisor=int(pixels[..., 3].flat[0]) / 255.0 if divisor_mode == 'image-wide' else None,
+        rgbd_image_divisor_byte=int(pixels[..., 3].flat[0]) if divisor_mode == 'image-wide' else None,
+        linear_min=float(rgb.min()), linear_max=float(rgb.max()),
         alpha_min=int(pixels[..., 3].min()), alpha_max=int(pixels[..., 3].max()),
         rgbd_quantization_mae=float(error.mean()), rgbd_quantization_max_error=float(error.max()))
 
@@ -181,7 +212,10 @@ def load_plan(config_path):
         spec.setdefault('encoding', 'legacy')
         if spec['encoding'] not in ('legacy', 'rgbd-v1'):
             raise ValueError('Unsupported lightmap encoding: ' + str(spec['encoding']))
+        if spec['encoding'] != 'rgbd-v1' and 'rgbd_divisor_mode' in spec:
+            raise ValueError('RGBD divisor mode requires rgbd-v1 encoding')
         if spec['encoding'] == 'rgbd-v1':
+            spec['rgbd_divisor_mode'] = rgbd_divisor_mode(spec.get('rgbd_divisor_mode', 'per-pixel'))
             if (not spec.get('lightmap_markers') or spec.get('references') or
                 source.suffix.lower() not in ('.exr', '.hdr') or spec['color_space'] != 'linear' or
                 spec['alpha'] != 'preserve' or spec['mipmaps'] or spec['codec'] != 'uastc'):
@@ -264,26 +298,36 @@ def load_plan(config_path):
                 textures=specs, models=rewritten, changes=changes)
 
 
+def read_float_hdr(source):
+    """Existing EXR/HDR backend: BGR(A), storage rows top first."""
+    os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '1')
+    import cv2
+    raw=cv2.imread(str(source),cv2.IMREAD_UNCHANGED)
+    if raw is None or raw.ndim!=3 or raw.shape[2] not in (3,4):
+        raise ValueError(f'Cannot decode RGB HDR image: {source}')
+    return raw
+
+
 def prepare(spec, directory):
     import numpy as np
     from PIL import Image
     source = Path(spec['source_path'])
     metrics = {}
     if source.suffix.lower() in ('.exr', '.hdr'):
-        os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '1')
-        import cv2
-        raw = cv2.imread(str(source), cv2.IMREAD_UNCHANGED)
-        if raw is None or raw.ndim != 3 or raw.shape[2] not in (3, 4):
-            raise ValueError(f'Cannot decode RGB HDR image: {source}')
+        raw = read_float_hdr(source)
         source_dimensions = [raw.shape[1], raw.shape[0]]
-        raw = resize_lightmap(raw, spec, True)
+        ownership_report = directory/(Path(spec['output']).stem+'_ownership_filter.json')
+        raw = resize_lightmap(raw, spec, True, owner_report_path=ownership_report)
+        if spec.get('owner_aware') is not None:
+            metrics['owner_aware'] = dict(report=str(ownership_report), sha256=sha(ownership_report))
         rgb = raw[:, :, [2, 1, 0]].astype(np.float32)
         if not np.isfinite(rgb).all():
             raise ValueError(f'Non-finite RGB values: {source}')
-        metrics = dict(linear_min=float(rgb.min()), linear_max=float(rgb.max()),
+        metrics.update(linear_min=float(rgb.min()), linear_max=float(rgb.max()),
                        pixels_above_one_percent=float(np.mean(np.any(rgb > 1, axis=2)) * 100))
         if spec.get('encoding') == 'rgbd-v1':
-            pixels, rgbd_metrics = encode_rgbd(rgb)
+            pixels, rgbd_metrics = encode_rgbd(rgb, spec.get('rgbd_divisor_mode', 'per-pixel'),
+                fixed_divisor=spec.get('rgbd_fixed_divisor', False))
             metrics.update(rgbd_metrics)
             if spec.get('rgbd_region_policy'):
                 original = pixels.copy()

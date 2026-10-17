@@ -42,7 +42,7 @@ def validate_catalogue(saved_catalogue,current_catalogue):
         raise ValueError('Current receiver UV catalogue differs from the reused bake')
 
 
-def validate_ownership(labels, saved_catalogue, current_catalogue, size):
+def validate_ownership(labels, saved_catalogue, current_catalogue, size, *, native_ids=None):
     if labels.shape != (size, size) or not np.issubdtype(labels.dtype, np.integer):
         raise ValueError('Original ownership must be a matching square integer image')
     if (labels < 0).any() or not (labels > 0).any():
@@ -50,9 +50,13 @@ def validate_ownership(labels, saved_catalogue, current_catalogue, size):
     validate_catalogue(saved_catalogue,current_catalogue)
     if not set(np.unique(labels)) - {0} <= {row['id'] for row in saved_catalogue}:
         raise ValueError('Ownership contains unknown island IDs')
-    from ownership import rasterize
     raw = np.zeros((size, size, 4), np.float32)
     raw[:, :, 3] = labels > 0
-    reconstructed, _ = rasterize(raw, saved_catalogue)
+    if native_ids is None:
+        from ownership import rasterize
+        reconstructed, _ = rasterize(raw, saved_catalogue)
+    else:
+        from native_ownership import validate_native_ids
+        reconstructed, _ = validate_native_ids(native_ids, saved_catalogue, raw)
     if not np.array_equal(reconstructed, labels):
         raise ValueError('Original ownership disagrees with the current UV catalogue')

@@ -1,6 +1,7 @@
 """RGBD data contract, legacy preservation and marker naming regressions."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,7 +12,8 @@ import copy
 import os
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('core', Path(__file__).resolve().parents[1] / 'src/babylon_js/ktx_conversion.py')
+ADDON_ROOT = Path(os.environ.get('BJS_TEST_ADDON_ROOT', Path(__file__).resolve().parents[1] / 'src/babylon_js'))
+spec = importlib.util.spec_from_file_location('core', ADDON_ROOT / 'ktx_conversion.py')
 c = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(c)
 
@@ -206,6 +208,63 @@ class RGBDTests(unittest.TestCase):
         # Their absolute quantization step is larger than in shadow pixels.
         np.testing.assert_allclose(restored[:, 3:], rgb[:, 3:], rtol=.025, atol=.06)
         self.assertGreater(metrics['linear_max'], 1)
+
+    def test_image_wide_divisor_is_derived_from_full_peak(self):
+        rgb = np.array([[[0, .001, .05], [2, 10, 47.3232269]]], np.float32)
+        default, _ = c.encode_rgbd(rgb)
+        explicit, _ = c.encode_rgbd(rgb, 'per-pixel')
+        np.testing.assert_array_equal(default, explicit)
+        pixels, metrics = c.encode_rgbd(rgb, 'image-wide')
+        self.assertTrue(np.all(pixels[..., 3] == 5))
+        self.assertEqual(metrics['rgbd_encoded_divisor_mode'], 'image-wide')
+        self.assertAlmostEqual(metrics['rgbd_source_peak'], float(rgb.max()))
+        self.assertAlmostEqual(metrics['rgbd_image_divisor'], 5 / 255, places=8)
+        expected = np.rint(np.power(rgb * np.float32(5 / 255), 1 / 2.2) * 255).astype(np.uint8)
+        np.testing.assert_array_equal(pixels[..., :3], expected)
+        # Existing metadata floor keeps a lost alpha byte from amplifying energy.
+        lost_alpha = pixels.copy(); lost_alpha[..., 3] = 0
+        clamped = np.power(lost_alpha[..., :3] / 255, 2.2) / np.maximum(lost_alpha[..., 3:4] / 255, 5 / 255)
+        intended = np.power(pixels[..., :3] / 255, 2.2) / (5 / 255)
+        np.testing.assert_array_equal(clamped, intended)
+        for peak, divisor in [(0, 255), (2, 127), (63, 4), (255, 1)]:
+            other, _ = c.encode_rgbd(np.full((2, 2, 3), peak, np.float32), 'image-wide')
+            self.assertTrue(np.all(other[..., 3] == divisor))
+        with self.assertRaisesRegex(ValueError, 'Unsupported RGBD divisor mode'):
+            c.encode_rgbd(rgb, 'unknown')
+
+    def test_image_wide_preparation_uses_resized_full_image(self):
+        from unittest.mock import patch
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root / 'source.exr'; source.write_bytes(b'placeholder')
+            spec = dict(source_path=str(source), output='wide.ktx2', size=512,
+                        encoding='rgbd-v1', rgbd_divisor_mode='image-wide', color_space='linear', alpha='preserve', flip_y=True)
+            # Each 2x2 block averages one64 sample to16 before encoding.
+            raw = np.zeros((1024, 1024, 3), np.float32); raw[::2, ::2] = 64
+            with patch('cv2.imread', return_value=raw):
+                path, metrics = c.prepare(spec, root)
+            # The specification and encoding metrics must merge in a real report.
+            record = dict(**spec, **metrics)
+            self.assertEqual(record['rgbd_divisor_mode'], 'image-wide')
+            self.assertEqual(record['rgbd_encoded_divisor_mode'], 'image-wide')
+            self.assertEqual(metrics['linear_max'], 16)
+            self.assertEqual(metrics['alpha_min'], 15)
+            self.assertEqual(metrics['alpha_max'], 15)
+            self.assertEqual(np.asarray(Image.open(path)).shape, (512, 512, 4))
+
+    def test_divisor_mode_plan_rejects_non_rgbd_and_unknown_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / 'source.exr').write_bytes(b'placeholder')
+            (root / 'scene.babylon').write_text(json.dumps(dict(meshes=[dict(name='lightmap_old', id='stable')])))
+            texture = dict(source='source.exr', output='wide.ktx2', lightmap_markers=['lightmap_old'], flip_y=True,
+                           color_space='linear', codec='uastc', mipmaps=False, alpha='preserve', encoding='rgbd-v1', rgbd_divisor_mode='image-wide')
+            config = dict(version=1, output_dir='out', models=[dict(source='scene.babylon')], textures=[texture])
+            path = root / 'config.json'; path.write_text(json.dumps(config))
+            self.assertEqual(c.load_plan(path)['textures'][0]['rgbd_divisor_mode'], 'image-wide')
+            texture['rgbd_divisor_mode'] = 'typo'; path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError, 'Unsupported RGBD divisor mode'): c.load_plan(path)
+            texture.update(encoding='legacy', rgbd_divisor_mode='image-wide'); path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError, 'requires rgbd-v1'): c.load_plan(path)
 
     def test_reject_invalid_energy_instead_of_clipping(self):
         for value in [-.01, 256, np.nan, np.inf]:

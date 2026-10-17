@@ -1,0 +1,7 @@
+# Local runtime validation helper
+
+`prepare_kadshow_runtime.cjs REPO EXTRACTED_APP` extends the existing `extract_kadshow_browser.mjs` output with unchanged current consumer lightmap assignment, colour-map loading, lighting-profile, chunk metadata and mesh-merging functions. Source hashes are saved beside the extracted file. Run the base extractor anew before each adaptation; do not append twice.
+
+`validate_environment_browser.cjs DELIVERY EXTRACTED_APP EVIDENCE` exercises the one .babylon file in DELIVERY using real WebGL KTX2/ENV/Basis decoding. It requires DELIVERY/blender/evidence/export_manifest.json (visible_triangles, expected_groups, expected_always_active), source_comparison.json (world_bounds), and review-cameras.json (name, position, target, vertical fov). The light test currently expects one character-only light. Probes and supplemental close-ups retain the pub validation setup; only the review-cameras views establish matched framing. Thus it is a scoped environment harness, not a general physics or React lifecycle validator.
+
+Current extensions: actual optional colour-map load before material assignment; fresh opacity; RGBD UNORM; exact bounds/triangles and expected group counts; runtime light exclusions and responding movable probe; matched supplied cameras with intended profile and environment-reflection-disabled diagnostic; environment probe render. Test the resulting package, not only script syntax. No authenticated upload, collision worker, navigation movement or culling performance is established.
