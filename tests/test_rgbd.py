@@ -9,7 +9,6 @@ import numpy as np
 import sys
 import types
 import copy
-import os
 from unittest.mock import patch
 
 ADDON_ROOT = Path(os.environ.get('BJS_TEST_ADDON_ROOT', Path(__file__).resolve().parents[1] / 'src/babylon_js'))
@@ -231,6 +230,21 @@ class RGBDTests(unittest.TestCase):
             self.assertTrue(np.all(other[..., 3] == divisor))
         with self.assertRaisesRegex(ValueError, 'Unsupported RGBD divisor mode'):
             c.encode_rgbd(rgb, 'unknown')
+
+    def test_fixed_divisor_keyword_preserves_image_wide_bytes_and_metrics(self):
+        # Include black, shadows, mixed peaks and the upper format boundary.
+        for peak in (0, 1, 2, 47.3232269, 63, 255):
+            rgb = np.array([[[0, 0, 0], [peak, peak*.1, peak*.001]],
+                            [[peak*.5, 0, peak*.9], [0, peak, peak*.3]]], np.float32)
+            expected, metrics = c.encode_rgbd(rgb, 'image-wide')
+            for mode in ('per-pixel', 'image-wide'):
+                with self.subTest(peak=peak, mode=mode):
+                    actual, actual_metrics = c.encode_rgbd(rgb, mode, fixed_divisor=True)
+                    np.testing.assert_array_equal(actual, expected)
+                    self.assertEqual(actual_metrics, metrics)
+            default, _ = c.encode_rgbd(rgb)
+            explicit, _ = c.encode_rgbd(rgb, fixed_divisor=False)
+            np.testing.assert_array_equal(default, explicit)
 
     def test_image_wide_preparation_uses_resized_full_image(self):
         from unittest.mock import patch

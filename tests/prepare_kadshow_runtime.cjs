@@ -1,5 +1,5 @@
 // Task-specific harness adapter. Consumer function bodies are extracted unchanged.
-const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process'),crypto=require('node:crypto');
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const [repo,app]=process.argv.slice(2); if(!repo||!app)throw Error('Usage: prepare_kadshow_runtime.cjs REPO EXTRACTED_APP');
 const ts=require(path.join(repo,'fe/client/node_modules/typescript'));
 

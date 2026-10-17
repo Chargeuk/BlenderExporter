@@ -264,7 +264,7 @@ def main():
             if native_ownership:
                 from native_ownership import load_native_ids,validate_native_ids
                 from ownership import candidate_diagnostic
-                image,receipt=load_native_ids(c,root,catalogue)
+                image,_=load_native_ids(c,root,catalogue)
                 labels,report=validate_native_ids(image,catalogue,raw,np.load(root/'bake/indirect_raw.npy'))
                 report['native_receipt_sha256']=sha(root/'bake/native_ownership.provenance.json')
                 report['conservative_candidates']=candidate_diagnostic(labels,catalogue)
@@ -325,7 +325,7 @@ def main():
             native_ids=None
             if native_ownership:
                 from native_ownership import load_native_ids,validate_native_ids
-                native_ids,native_receipt=load_native_ids(c,root,saved)
+                native_ids,_=load_native_ids(c,root,saved)
                 validate_native_ids(native_ids,saved,raw)
             validate_ownership(labels,saved,catalogue,c['size'],native_ids=native_ids)
             if not np.array_equal(raw[:,:,3]>0,labels>0):raise ValueError('AO coverage differs from lighting ownership')

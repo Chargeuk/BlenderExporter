@@ -117,7 +117,6 @@ def encode_rgbd(rgb, divisor_mode='per-pixel', *, fixed_divisor=False):
     if not np.isfinite(rgb).all() or np.any(rgb < 0) or np.any(rgb > 255):
         raise ValueError('RGBD requires finite nonnegative linear RGB in [0,255]; source is not clipped')
     peak = np.maximum(rgb.max(axis=-1), 1e-7)
-    if fixed_divisor: peak = np.full_like(peak, peak.max())
     divisor = np.minimum(np.floor(np.maximum(255.0 / peak, 1.0)), 255.0) / 255.0
     if divisor_mode == 'image-wide':
         # A uniform alpha floor avoids lossy alpha becoming a radiance multiplier.

@@ -42,7 +42,8 @@ def validate_catalogue(saved_catalogue,current_catalogue):
         raise ValueError('Current receiver UV catalogue differs from the reused bake')
 
 
-def validate_ownership(labels, saved_catalogue, current_catalogue, size, *, native_ids=None):
+def validate_label_schema(labels, saved_catalogue, current_catalogue, size):
+    """Check saved labels/catalogues without reconstructing their native footprint."""
     if labels.shape != (size, size) or not np.issubdtype(labels.dtype, np.integer):
         raise ValueError('Original ownership must be a matching square integer image')
     if (labels < 0).any() or not (labels > 0).any():
@@ -50,6 +51,10 @@ def validate_ownership(labels, saved_catalogue, current_catalogue, size, *, nati
     validate_catalogue(saved_catalogue,current_catalogue)
     if not set(np.unique(labels)) - {0} <= {row['id'] for row in saved_catalogue}:
         raise ValueError('Ownership contains unknown island IDs')
+
+
+def validate_ownership(labels, saved_catalogue, current_catalogue, size, *, native_ids=None):
+    validate_label_schema(labels, saved_catalogue, current_catalogue, size)
     raw = np.zeros((size, size, 4), np.float32)
     raw[:, :, 3] = labels > 0
     if native_ids is None:

@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 import bpy
 import numpy as np
 
@@ -11,7 +12,9 @@ sys.path.insert(0, str(ROOT/'src'))
 sys.path.insert(0, str(ROOT/'src/babylon_js/environment_tools'))
 from common import sha
 import worker
-from receiver_response_capture import capture
+from receiver_response_capture import capture, capped_materials
+from receiver_bake import joined_receivers
+import receiver_bake
 
 assert bpy.app.background, 'Never run this fixture in a live session'
 args = sys.argv[sys.argv.index('--')+1:]
@@ -47,6 +50,52 @@ for index, name in enumerate(('Uncapped', 'Capped')):
         for data, uv in zip(layer.data, ((x0, .1), (x1, .1), (x1, .9), (x0, .9))): data.uv = uv
     mesh.uv_layers['UVMap'].active_render = True
     objects.append(obj)
+# A second object sharing the receiving mesh must retain its physical material.
+shared = bpy.data.objects.new('Shared mesh user', objects[1].data)
+scene.collection.objects.link(shared)
+shared.hide_render = True
+original_mesh = objects[1].data
+baseline = (len(bpy.data.meshes), len(bpy.data.materials))
+objects[1].hide_set(True)
+try:
+    with capped_materials(objects[1], .8) as clones:
+        assert objects[1].data != original_mesh and shared.data == original_mesh
+        assert shared.data.materials[0] == material
+        capped = next(n for n in clones[0].node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
+        minimum = capped.inputs['Metallic'].links[0].from_node
+        assert minimum.operation == 'MINIMUM' and minimum.inputs[1].default_value == np.float32(.8)
+        assert minimum.inputs[0].links[0].from_node.type == 'VALUE'
+        objects[1].hide_set(False)
+        raise RuntimeError('injected cap bake failure')
+except RuntimeError as exc:
+    assert str(exc) == 'injected cap bake failure'
+assert objects[1].data == original_mesh and objects[1].hide_get()
+assert (len(bpy.data.meshes), len(bpy.data.materials)) == baseline
+objects[1].hide_set(False)
+# Native transport accepts the first Principled; response still requires exactly one.
+extra = material.node_tree.nodes.new('ShaderNodeBsdfPrincipled')
+proof = []
+with capped_materials(objects[1], .8, strict_principled=False, material_proof=proof):
+    assert proof[0]['source'] == material.name and proof[0]['principled_node'] == principal.name
+    assert proof[0]['metallic_link'] == {'node': value.name, 'socket': value.outputs[0].identifier}
+try:
+    with capped_materials(objects[1], .8):
+        raise AssertionError('Response must reject multiple Principled nodes')
+except ValueError as exc:
+    assert 'one Principled' in str(exc)
+assert objects[1].data == original_mesh and shared.data.materials[0] == material
+assert (len(bpy.data.meshes), len(bpy.data.materials)) == baseline
+material.node_tree.nodes.remove(extra)
+# The unlinked metallic value follows the same MINIMUM operation and is restored.
+material.node_tree.links.remove(principal.inputs['Metallic'].links[0])
+principal.inputs['Metallic'].default_value = .9
+with capped_materials(objects[1], .8) as clones:
+    capped = next(n for n in clones[0].node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
+    minimum = capped.inputs['Metallic'].links[0].from_node
+    assert not minimum.inputs[0].is_linked and minimum.inputs[0].default_value == np.float32(.9)
+assert not principal.inputs['Metallic'].is_linked
+material.node_tree.links.new(value.outputs[0], principal.inputs['Metallic'])
+bpy.data.objects.remove(shared, do_unlink=True)
 source = out/'fixture.blend'
 bpy.ops.wm.save_as_mainfile(filepath=str(source))
 config_path = out/'fixture.json'
@@ -76,6 +125,46 @@ record = json.loads((stage/'capture.provenance.json').read_text())
 assert all(r['pass_filter'] == ['COLOR'] and r['type'] == 'DIFFUSE' and r['samples'] == 1
            and r['margin'] == 0 and not r['adaptive'] and not r['denoising'] for r in record['operations'])
 assert record['operations'][1]['receivers'] == ['Capped']
+# Failure before/after the join operator runs must dispose every owned copy and
+# mesh, even when the join has invalidated the non-active copy RNA references.
+real_join = bpy.ops.object.join
+for fail_after_join in (False, True):
+    baseline = (len(bpy.data.objects), len(bpy.data.meshes))
+    copies, _ = worker.evaluate_receivers(config)
+    owned_objects = {obj.as_pointer() for obj in copies}
+    owned_meshes = {obj.data.as_pointer() for obj in copies}
+    visibility = [obj.hide_render for obj in objects]
+    def failing_join():
+        if fail_after_join:
+            real_join()
+        raise RuntimeError('injected join operator failure')
+    operations = SimpleNamespace(select_all=bpy.ops.object.select_all, join=failing_join)
+    failing_bpy = SimpleNamespace(data=bpy.data, context=bpy.context,
+                                  ops=SimpleNamespace(object=operations))
+    try:
+        with patch.object(receiver_bake, 'bpy', failing_bpy):
+            with joined_receivers(copies, objects):
+                raise AssertionError('Failed join must never yield a proxy')
+    except RuntimeError as exc:
+        assert str(exc) == 'injected join operator failure'
+    assert not owned_objects & {obj.as_pointer() for obj in bpy.data.objects}
+    assert not owned_meshes & {mesh.as_pointer() for mesh in bpy.data.meshes}
+    assert (len(bpy.data.objects), len(bpy.data.meshes)) == baseline
+    assert [obj.hide_render for obj in objects] == visibility
+    assert [obj.data for obj in objects] == original_meshes
+    assert all(obj.data.materials[0] == material for obj in objects)
+# Failure in a joined bake removes the proxy and restores receiver visibility.
+copies, _ = worker.evaluate_receivers(config)
+visibility = [obj.hide_render for obj in objects]
+try:
+    with joined_receivers(copies, objects) as (failed_proxy, normal_error):
+        proxy_name = failed_proxy.name
+        assert normal_error <= .001 and all(obj.hide_render for obj in objects)
+        raise RuntimeError('injected joined bake failure')
+except RuntimeError as exc:
+    assert str(exc) == 'injected joined bake failure'
+assert bpy.data.objects.get(proxy_name) is None
+assert [obj.hide_render for obj in objects] == visibility
 # Establish ownership with a real native COLOR-excluded bake, never COLOR-pass alpha.
 copies, catalogue = worker.evaluate_receivers(config)
 for obj in objects: obj.hide_render = True

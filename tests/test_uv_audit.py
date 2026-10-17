@@ -1,5 +1,7 @@
 """Geometric UV overlap and thin-chart diagnostics without bake alpha or SciPy."""
 import sys
+import importlib.util
+import subprocess
 import unittest
 from pathlib import Path
 import numpy as np
@@ -28,6 +30,43 @@ class UVAuditTests(unittest.TestCase):
         for a in (self.first, self.first[::-1]):
             for b in (self.overlap, self.overlap[::-1]):
                 self.assertAlmostEqual(triangle_intersection_area(a, b), .03125)
+
+    def test_intersection_wrapper_matches_canonical_geometry_and_validates_inputs(self):
+        helper = Path(__file__).resolve().parents[1]/'src/babylon_js/environment_tools/uv_geometry.py'
+        spec = importlib.util.spec_from_file_location('canonical_uv_geometry_test', helper)
+        geometry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(geometry)
+        triangles = [self.first, self.overlap, self.shared,
+                     [[.1, .1], [.2, .1], [.1, .2]],
+                     [[.5-1e-5, 0], [1-1e-5, 0], [.5-1e-5, .5]]]
+        for first in triangles:
+            for second in triangles:
+                for a, b in ((first, second), (first[::-1], second[::-1])):
+                    self.assertEqual(triangle_intersection_area(a, b), geometry.triangle_intersection_area(a, b))
+        for invalid in ([[0, 0], [1, 0]], [[0, 0], [1, 0], [0, np.inf]]):
+            for a, b in ((invalid, self.first), (self.first, invalid)):
+                with self.assertRaisesRegex(ValueError, 'finite 3x2'):
+                    triangle_intersection_area(a, b)
+        zero = [[0, 0], [0, 0], [0, 0]]
+        self.assertEqual(triangle_intersection_area(zero, self.first), 0)
+        self.assertEqual(triangle_intersection_area(self.first, zero), 0)
+
+    def test_import_by_path_does_not_load_blender_package(self):
+        helper = Path(__file__).resolve().parents[1]/'src/babylon_js/workflow_tools/uv_audit.py'
+        code = """import importlib.util, sys
+class NoBlender:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'bpy' or fullname == 'babylon_js' or fullname.startswith('babylon_js.'):
+            raise ImportError('Unexpected Blender package import: ' + fullname)
+sys.meta_path.insert(0, NoBlender())
+spec = importlib.util.spec_from_file_location('standalone_audit', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.triangle_intersection_area([[0,0],[1,0],[0,1]], [[0,0],[0,1],[1,0]]) == .5
+"""
+        result = subprocess.run([sys.executable, '-B', '-c', code, str(helper)],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_separated_and_shared_edge_are_zero_area(self):
         self.assertEqual(triangle_intersection_area(self.first, self.shared), 0)

@@ -3,7 +3,7 @@ import sys,unittest
 from pathlib import Path
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src/babylon_js/environment_tools'))
-from reuse import reuse_plan,validate_ownership,validate_catalogue,load_labels
+from reuse import reuse_plan,validate_ownership,validate_catalogue,validate_label_schema,load_labels
 from ownership import rasterize
 
 
@@ -50,6 +50,20 @@ class ReuseTests(unittest.TestCase):
             validate_ownership(wrong,charts,charts,16)
         with self.assertRaisesRegex(ValueError,'integer image'):
             validate_ownership(labels.astype(float),charts,charts,16)
+
+    def test_label_schema_retains_catalogue_and_label_guards(self):
+        chart = {'id': 1, 'object': 'A', 'polygon_root': 0,
+                 'triangles': [[[0, 0], [1, 0], [0, 1]]]}
+        labels = np.array([[1, 0], [0, 0]], np.int32)
+        validate_label_schema(labels, [chart], [chart], 2)
+        for invalid in (labels.astype(float), np.ones((3, 3), np.int32),
+                        np.zeros((2, 2), np.int32), np.array([[1, -1], [0, 0]]),
+                        np.array([[2, 0], [0, 0]])):
+            with self.subTest(labels=invalid), self.assertRaises(ValueError):
+                validate_label_schema(invalid, [chart], [chart], 2)
+        for duplicate in (dict(chart, id=2), dict(chart, object='B')):
+            with self.subTest(duplicate=duplicate), self.assertRaisesRegex(ValueError, 'duplicate'):
+                validate_label_schema(labels, [chart, duplicate], [chart, duplicate], 2)
 
     def test_saved_ids_survive_different_enumeration(self):
         a={'id':9,'object':'A','polygon_root':0,'triangles':[[[0,0],[1,0],[1,1]]]}

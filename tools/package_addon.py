@@ -29,6 +29,7 @@ REQUIRED_TOOLS = (
     'environment_tools/worker.py',
     'environment_tools/receiver_response.py',
     'environment_tools/receiver_response_capture.py',
+    'environment_tools/receiver_bake.py',
     'environment_tools/physical_colour_adjustment.py',
     'environment_tools/recipe_cli.py',
     'environment_tools/volume_capture.py',

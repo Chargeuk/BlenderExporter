@@ -1,45 +1,10 @@
 """COLOR-only measurement in the saved-scene background worker, never a live scene."""
 import json
-from contextlib import contextmanager
 import bpy
-import numpy as np
 
 from common import save_json, sha
 from receiver_response import validate_settings, save_new_array
-
-
-@contextmanager
-def capped_materials(obj, cap):
-    """Clone only this receiving object's data; shared transport materials remain physical."""
-    original_mesh = obj.data
-    temporary_mesh = original_mesh.copy()
-    clones = []
-    obj.data = temporary_mesh
-    try:
-        for material in list(temporary_mesh.materials):
-            clone = material.copy()
-            clones.append(clone)
-            principal = [n for n in clone.node_tree.nodes if n.type == 'BSDF_PRINCIPLED']
-            if len(principal) != 1:
-                raise ValueError('Response requires one Principled node: ' + material.name)
-            socket = principal[0].inputs['Metallic']
-            minimum = clone.node_tree.nodes.new('ShaderNodeMath')
-            minimum.operation = 'MINIMUM'
-            minimum.inputs[1].default_value = cap
-            if socket.is_linked:
-                clone.node_tree.links.new(socket.links[0].from_socket, minimum.inputs[0])
-            else:
-                minimum.inputs[0].default_value = socket.default_value
-            clone.node_tree.links.new(minimum.outputs[0], socket)
-        temporary_mesh.materials.clear()
-        for material in clones:
-            temporary_mesh.materials.append(material)
-        yield clones
-    finally:
-        obj.data = original_mesh
-        bpy.data.meshes.remove(temporary_mesh)
-        for material in clones:
-            bpy.data.materials.remove(material)
+from receiver_bake import capped_materials, joined_receivers
 
 
 def verify_physical_capture(c, root, tint):
@@ -112,32 +77,20 @@ def _capture(c, root, stage, tint):
         return raw_pixels(image)
     copies, catalogue = evaluate_receivers(c)
     save_json(stage/'islands.json', catalogue)
-    for obj in receivers: obj.hide_render = True
-    bpy.ops.object.select_all(action='DESELECT')
-    for obj in copies:
-        obj.hide_set(False)
-        obj.select_set(True)
-    bpy.context.view_layer.objects.active = copies[0]
-    bpy.ops.object.join()
-    proxy = bpy.context.object
-    restore = proxy.matrix_world.to_3x3().transposed()
-    wanted = [(restore @ v.vector).normalized() for v in proxy.data.attributes['_environment_world_normal'].data]
-    proxy.data.normals_split_custom_set(wanted)
-    error = max(((a.vector-b).length for a, b in zip(proxy.data.corner_normals, wanted)), default=0)
-    if error > .001: raise ValueError('Response proxy normals changed')
-    image = target_image(c, list(proxy.data.materials))
-    proxy.data.uv_layers.active_index = proxy.data.uv_layers.find(uv)
-    save_new_array(stage/'diffuse_colour.npy', colour(image, record['receivers'], 'uncapped'))
-    from native_ownership import ownership_method
-    if ownership_method(c)=='native-island-id':
-        from native_ownership import bake_native_ids, validate_native_ids
-        native_ids, native_settings=bake_native_ids(c,proxy,catalogue)
-        _, native_report=validate_native_ids(native_ids,catalogue)
-        save_new_array(stage/'native_island_ids.npy',native_ids)
-        record['native_ownership']=dict(native_report,settings=native_settings)
-    bpy.data.objects.remove(proxy, do_unlink=True)
-    bpy.data.images.remove(image)
-    for obj in receivers: obj.hide_render = False
+    with joined_receivers(copies, receivers, normal_error='Response proxy normals changed: ') as (proxy, error):
+        image = target_image(c, list(proxy.data.materials))
+        try:
+            proxy.data.uv_layers.active_index = proxy.data.uv_layers.find(uv)
+            save_new_array(stage/'diffuse_colour.npy', colour(image, record['receivers'], 'uncapped'))
+            from native_ownership import ownership_method
+            if ownership_method(c)=='native-island-id':
+                from native_ownership import bake_native_ids, validate_native_ids
+                native_ids, native_settings=bake_native_ids(c,proxy,catalogue)
+                _, native_report=validate_native_ids(native_ids,catalogue)
+                save_new_array(stage/'native_island_ids.npy',native_ids)
+                record['native_ownership']=dict(native_report,settings=native_settings)
+        finally:
+            bpy.data.images.remove(image)
     patches = []
     for index, obj in enumerate(caps):
         with capped_materials(obj, c.get('metallic_cap', .8)) as materials:

@@ -1,11 +1,18 @@
 """Read-only UV triangle audit. Float64 NumPy geometry; no Blender/SciPy dependency."""
 import argparse
 import hashlib
+import importlib.util
 import heapq
 import json
 import math
 from pathlib import Path
 import numpy as np
+
+# Load the dependency-free calculation by path: the add-on initializer needs bpy.
+_geometry_spec = importlib.util.spec_from_file_location(
+    '_workflow_uv_geometry', Path(__file__).resolve().parents[1]/'environment_tools/uv_geometry.py')
+_geometry = importlib.util.module_from_spec(_geometry_spec)
+_geometry_spec.loader.exec_module(_geometry)
 
 
 def cross(a, b):
@@ -31,25 +38,7 @@ def triangle_intersection_area(first, second):
     winding = cross(second[1]-second[0], second[2]-second[0])
     if not winding or polygon_area(first) == 0:
         return 0.0
-    sign = 1 if winding > 0 else -1
-    polygon = list(first)
-    for index in range(3):
-        if not polygon:
-            break
-        origin = second[index]
-        edge = second[(index+1) % 3]-origin
-        result = []
-        previous = polygon[-1]
-        previous_distance = sign*cross(edge, previous-origin)
-        for point in polygon:
-            distance = sign*cross(edge, point-origin)
-            if (distance >= 0) != (previous_distance >= 0):
-                result.append(previous+(point-previous)*(previous_distance/(previous_distance-distance)))
-            if distance >= 0:
-                result.append(point)
-            previous, previous_distance = point, distance
-        polygon = result
-    return polygon_area(polygon)
+    return _geometry.triangle_intersection_area(first, second)
 
 
 def convex_hull(points):

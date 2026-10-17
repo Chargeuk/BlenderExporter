@@ -172,8 +172,9 @@ def validate_original(c,original_root,tool_root,*,_patch_tool_provenance=None):
         raw.append(np.load(path,allow_pickle=False))
     labels,report=validate_native_ids(ids,catalogue,*raw)
     saved_labels=np.load(original/'ownership/labels.npy',allow_pickle=False)
-    from reuse import validate_ownership
-    validate_ownership(saved_labels,catalogue,catalogue,c['size'],native_ids=ids)
+    from reuse import validate_label_schema
+    # The measured native labels above already prove the exact raster footprint.
+    validate_label_schema(saved_labels,catalogue,catalogue,c['size'])
     if not np.array_equal(labels,saved_labels):
         raise ValueError('Original ownership labels differ from actual native IDs')
     if c.get('ao',{}).get('enabled'):

@@ -13,6 +13,7 @@ from babylon_js import environment_controls as world_tools
 from babylon_js.lighting_controls import validate_preview_resolution
 from image_binding import replace_from_disk
 from appearance import preview_identity, verify_combination
+from receiver_bake import capped_materials, joined_receivers
 
 
 def select(c, name):
@@ -330,31 +331,23 @@ def _bake(c,root,stage,tint=None):
             diffuse_bounces=s.cycles.diffuse_bounces,total_bounces=s.cycles.max_bounces))
         save_json(stage/'effective_bake_settings.json',effective_records)
     copies,catalogue=evaluate_receivers(c);save_json(stage/'islands.json',catalogue)
-    for o in receivers:o.hide_render=True
-    bpy.ops.object.select_all(action='DESELECT')
-    for o in copies:o.select_set(True)
-    bpy.context.view_layer.objects.active=copies[0];bpy.ops.object.join();proxy=bpy.context.object
-    restore=proxy.matrix_world.to_3x3().transposed()
-    wanted=[(restore@v.vector).normalized() for v in proxy.data.attributes['_environment_world_normal'].data]
-    proxy.data.normals_split_custom_set(wanted)
-    err=max(((a.vector-b).length for a,b in zip(proxy.data.corner_normals,wanted)),default=0)
-    if err>.001:raise ValueError('Joined receiver normals changed: '+str(err))
-    im=target_image(c,list(proxy.data.materials));proxy.data.uv_layers.active_index=proxy.data.uv_layers.find(c.get('uv','SimpleBake'))
-    for mode in ('DIRECT','INDIRECT'):
-        s.cycles.samples=c['samples'][mode]
-        record_effective('joined',mode,[o.name for o in receivers])
-        save_json(stage/'progress.json',{'phase':'baking','pass':mode,'samples':s.cycles.samples,'time':time.time()})
-        bpy.ops.object.bake(type='DIFFUSE',pass_filter={mode},margin=0,use_clear=True,use_selected_to_active=False,uv_layer=c.get('uv','SimpleBake'))
-        np.save(stage/(mode.lower()+'_raw.npy'),raw_pixels(im))
-    native_ownership=None
-    from native_ownership import ownership_method
-    if ownership_method(c)=='native-island-id':
-        from native_ownership import save_native_bake
-        save_json(stage/'progress.json',{'phase':'native_ownership','pass':'EMIT','samples':1,'time':time.time()})
-        native_ownership=save_native_bake(c,root,stage,proxy,catalogue)
-    # Metallic receiving cap: restore other objects' actual materials for every local bake.
-    bpy.data.objects.remove(proxy,do_unlink=True)
-    for o in receivers:o.hide_render=False
+    with joined_receivers(copies,receivers) as (proxy,err):
+        im=target_image(c,list(proxy.data.materials));proxy.data.uv_layers.active_index=proxy.data.uv_layers.find(c.get('uv','SimpleBake'))
+        try:
+            for mode in ('DIRECT','INDIRECT'):
+                s.cycles.samples=c['samples'][mode]
+                record_effective('joined',mode,[o.name for o in receivers])
+                save_json(stage/'progress.json',{'phase':'baking','pass':mode,'samples':s.cycles.samples,'time':time.time()})
+                bpy.ops.object.bake(type='DIFFUSE',pass_filter={mode},margin=0,use_clear=True,use_selected_to_active=False,uv_layer=c.get('uv','SimpleBake'))
+                np.save(stage/(mode.lower()+'_raw.npy'),raw_pixels(im))
+            native_ownership=None
+            from native_ownership import ownership_method
+            if ownership_method(c)=='native-island-id':
+                from native_ownership import save_native_bake
+                save_json(stage/'progress.json',{'phase':'native_ownership','pass':'EMIT','samples':1,'time':time.time()})
+                native_ownership=save_native_bake(c,root,stage,proxy,catalogue)
+        finally:
+            bpy.data.images.remove(im)
     caps=select(c,'metal_receivers')
     if not set(caps).issubset(receivers):raise ValueError('Metal receivers must be bake receivers')
     metadata=[]
@@ -365,7 +358,7 @@ def _bake(c,root,stage,tint=None):
     transport_meshes={obj:obj.data for obj in receivers+contributors}
     transport_materials={obj:tuple(obj.data.materials) for obj in receivers+contributors}
     for index,o in enumerate(caps):
-        original_mesh=o.data; temporary_mesh=None; clones=[]; im=None
+        im=None
         was_hidden=o.hide_get()
         try:
             # An EMIT bake on evaluated copies leaves all transport untouched and
@@ -379,51 +372,31 @@ def _bake(c,root,stage,tint=None):
                     base_provenance_file=base_path.name+'.json',
                     base_semantics='linear Principled Base Color via local native EMIT',
                     coverage_sha256=hashlib.sha256(np.ascontiguousarray(base[...,3]).tobytes()).hexdigest())
-            # Data-linked instances must keep their real materials during this receiver's bake.
-            o.data=original_mesh.copy();temporary_mesh=o.data
-            for mat in original_mesh.materials:
-                clone=mat.copy();clones.append(clone)
-                p=next(n for n in clone.node_tree.nodes if n.type=='BSDF_PRINCIPLED')
-                socket=p.inputs['Metallic']
-                linked=socket.links[0].from_socket if socket.is_linked else None
-                proof['materials'].append({'source':mat.name,'effective':clone.name,
-                    'principled_node':p.name,'metallic_default':socket.default_value,
-                    'metallic_link':{'node':linked.node.name,'socket':linked.identifier} if linked else None})
-                minimum=clone.node_tree.nodes.new('ShaderNodeMath');minimum.operation='MINIMUM'
-                minimum.inputs[1].default_value=c.get('metallic_cap',.8)
-                if linked:clone.node_tree.links.new(linked,minimum.inputs[0])
-                else:minimum.inputs[0].default_value=socket.default_value
-                clone.node_tree.links.new(minimum.outputs[0],socket)
-            o.data.materials.clear()
-            for m in clones:o.data.materials.append(m)
-            im=target_image(c,clones)
-            bpy.ops.object.select_all(action='DESELECT');o.hide_set(False);o.select_set(True);bpy.context.view_layer.objects.active=o
-            for mode in ('DIRECT','INDIRECT'):
-                s.cycles.samples=c['samples'][mode]
-                passes={mode,'COLOR'} if preserve else {mode}
-                record_effective('metal_cap',mode,[o.name],passes,proof)
-                save_json(stage/'progress.json',{'phase':'metal_cap','object':o.name,'completed':index,'total':len(caps),'pass':mode})
-                bpy.ops.object.bake(type='DIFFUSE',pass_filter=passes,margin=0,use_clear=True,use_selected_to_active=False,uv_layer=c.get('uv','SimpleBake'))
-                a=raw_pixels(im);path=stage/f'metal_{index}_{mode.lower()}.npz'
-                row={'object':o.name,'pass':mode.lower(),'file':path.name,
-                     'pass_filter':sorted(passes),'preserve_metal_diffuse_weight':preserve}
-                if preserve:
-                    # Retain the original weighted output independently of the
-                    # normalized patch; COLOR alpha is deliberately not coverage.
-                    weighted_path=stage/f'metal_{index}_{mode.lower()}_weighted.npz'
-                    np.savez_compressed(weighted_path,pixels=a)
-                    a,division=normalize_metal_diffuse(a,base)
-                    row.update(proof,division=division,weighted_file=weighted_path.name,
-                        weighted_sha256=sha(weighted_path),semantics='native diffuse including COLOR divided by EMIT base; base applied once later')
-                np.savez_compressed(path,pixels=a)
-                if preserve:row['sha256']=sha(path)
-                metadata.append(row)
+            with capped_materials(o,c.get('metallic_cap',.8),strict_principled=False,material_proof=proof['materials']) as clones:
+                im=target_image(c,clones)
+                bpy.ops.object.select_all(action='DESELECT');o.hide_set(False);o.select_set(True);bpy.context.view_layer.objects.active=o
+                for mode in ('DIRECT','INDIRECT'):
+                    s.cycles.samples=c['samples'][mode]
+                    passes={mode,'COLOR'} if preserve else {mode}
+                    record_effective('metal_cap',mode,[o.name],passes,proof)
+                    save_json(stage/'progress.json',{'phase':'metal_cap','object':o.name,'completed':index,'total':len(caps),'pass':mode})
+                    bpy.ops.object.bake(type='DIFFUSE',pass_filter=passes,margin=0,use_clear=True,use_selected_to_active=False,uv_layer=c.get('uv','SimpleBake'))
+                    a=raw_pixels(im);path=stage/f'metal_{index}_{mode.lower()}.npz'
+                    row={'object':o.name,'pass':mode.lower(),'file':path.name,
+                         'pass_filter':sorted(passes),'preserve_metal_diffuse_weight':preserve}
+                    if preserve:
+                        # Retain the original weighted output independently of the
+                        # normalized patch; COLOR alpha is deliberately not coverage.
+                        weighted_path=stage/f'metal_{index}_{mode.lower()}_weighted.npz'
+                        np.savez_compressed(weighted_path,pixels=a)
+                        a,division=normalize_metal_diffuse(a,base)
+                        row.update(proof,division=division,weighted_file=weighted_path.name,
+                            weighted_sha256=sha(weighted_path),semantics='native diffuse including COLOR divided by EMIT base; base applied once later')
+                    np.savez_compressed(path,pixels=a)
+                    if preserve:row['sha256']=sha(path)
+                    metadata.append(row)
         finally:
-            # Restore the original mesh, not a reconstructed material list. This
-            # also protects shared-data contributors on failures and black-base rejection.
-            o.data=original_mesh;o.hide_set(was_hidden)
-            if temporary_mesh is not None:bpy.data.meshes.remove(temporary_mesh)
-            for m in clones:bpy.data.materials.remove(m)
+            o.hide_set(was_hidden)
             if im is not None:bpy.data.images.remove(im)
             for obj,mesh in transport_meshes.items():
                 assert obj.data==mesh and tuple(obj.data.materials)==transport_materials[obj], 'Transport materials changed: '+obj.name

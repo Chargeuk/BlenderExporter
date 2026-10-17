@@ -17,7 +17,7 @@ HERE=Path(__file__).resolve().parent
 _core_spec=spec_from_file_location('bjs_decoded_delivery_ktx_conversion',HERE.parent/'ktx_conversion.py')
 core=module_from_spec(_core_spec);_core_spec.loader.exec_module(core)
 sys.path.insert(0,str(HERE))
-from uv_tint_filter import bilinear,diagnose,decode_rgba8,effective_multiplier
+from uv_tint_filter import bilinear,diagnose
 
 
 def sha(path):

@@ -402,7 +402,7 @@ def validate_assembly(root):
     for name,expected in record['outputs'].items():
         path=(root/name).resolve()
         if not path.is_relative_to(root) or sha(path)!=expected:raise ValueError('Assembled patch output changed: '+name)
-    manifest,current,mapping,labels,inputs,neutral=validate_manifest(record['manifest'])
+    manifest,current,mapping,labels,_,neutral=validate_manifest(record['manifest'])
     if record.get('tool_authority')!=_tool_authority(manifest,_assembly_tool_inputs(manifest['assembly']['tool_source_root'])):
         raise ValueError('Assembly tool role authority differs')
     if (record['source_sha256']!=sha(current['_source']) or record['config_sha256']!=sha(current['_config']) or mapping!=record['mapping'] or neutral!=record['neutral_tint']):raise ValueError('Patch assembly identity/mapping changed')
