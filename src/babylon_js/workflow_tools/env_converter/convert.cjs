@@ -5,15 +5,33 @@ const path = require('node:path');
 const http = require('node:http');
 const { chromium } = require('playwright-core');
 const VERSION = require('babylonjs/package.json').version;
+const PLAYWRIGHT_VERSION = require('playwright-core/package.json').version;
+const { browserPath, launchOptions } = require('./runtime.cjs');
 
 async function main() {
-  if (process.argv.includes('--check')) {
-    const executable = process.env.BJS_ENV_CHROMIUM || chromium.executablePath();
-    if (!fs.existsSync(executable)) throw Error('Chromium missing: set BJS_ENV_CHROMIUM or install Playwright Chromium');
-    console.log(JSON.stringify({status:'ready',babylon:VERSION,chromium:executable}));
+  const args = process.argv.slice(2);
+  const browserIndex = args.indexOf('--browser');
+  if (browserIndex !== -1 && (!args[browserIndex+1] || args[browserIndex+1].startsWith('--')))
+    throw Error('--browser requires an executable path');
+  if (VERSION !== '7.27.0' || PLAYWRIGHT_VERSION !== '1.56.1')
+    throw Error('ENV converter dependencies differ from the pinned versions; run setup.py');
+  const executable = browserPath(chromium, browserIndex === -1 ? '' : args[browserIndex+1]);
+  if (args.includes('--check')) {
+    const result = {status:'ready',babylon:VERSION,playwright:PLAYWRIGHT_VERSION,chromium:executable};
+    if (args.includes('--launch')) {
+      const browser = await chromium.launch(launchOptions(executable));
+      try {
+        const page = await browser.newPage();
+        if (!await page.evaluate(()=>!!document.createElement('canvas').getContext('webgl2')))
+          throw Error('ENV converter requires a browser with WebGL2');
+        result.webgl = 2;
+        result.browserVersion = browser.version();
+      } finally { await browser.close(); }
+    }
+    console.log(JSON.stringify(result));
     return;
   }
-  const configPath = process.argv[2];
+  const configPath = args[0];
   if (!configPath) throw Error('Usage: node convert.cjs config.json (or --check)');
   const config = JSON.parse(fs.readFileSync(configPath,'utf8'));
   if (![128,256,512,1024].includes(config.size)) throw Error('Unsupported ENV face size');
@@ -31,8 +49,7 @@ async function main() {
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   let browser;
   try {
-    browser = await chromium.launch({headless:true,executablePath:process.env.BJS_ENV_CHROMIUM || chromium.executablePath(),
-      args:['--enable-webgl','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+    browser = await chromium.launch(launchOptions(executable));
     const page=await browser.newPage({viewport:{width:920,height:480}});
     const messages=[];
     page.on('console',m=>messages.push(m.type()+': '+m.text()));

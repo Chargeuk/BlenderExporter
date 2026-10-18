@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 32),
+    'version': (3, 3, 33),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -65,10 +65,23 @@ class BabylonExportPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
     env_converter_script: bpy.props.StringProperty(
         name='ENV converter script', subtype='FILE_PATH', default='',
-        description='Path to tools/env-converter/convert.cjs with its npm dependencies installed')
+        description='Converter override; blank uses the packaged ENV converter')
+    env_converter_browser: bpy.props.StringProperty(
+        name='ENV browser executable', subtype='FILE_PATH', default='',
+        description='Optional existing Chromium/Chrome for explicit setup; blank discovers a compatible browser')
+    env_converter_download_browser: bpy.props.BoolProperty(
+        name='Allow Chromium download if needed', default=False,
+        description='Only the explicit setup/repair action may download a browser when none already works')
+    env_converter_status: bpy.props.StringProperty(default='', options={'SKIP_SAVE'})
 
     def draw(self, context):
         self.layout.prop(self, 'env_converter_script')
+        self.layout.prop(self, 'env_converter_browser')
+        self.layout.prop(self, 'env_converter_download_browser')
+        self.layout.label(text='Setup targets the selected converter, or the bundled converter when blank')
+        self.layout.operator('babylon.env_converter_setup')
+        if self.env_converter_status:
+            self.layout.label(text=self.env_converter_status)
         self.layout.label(text='Room HDR to ENV converter: kadshow-environment-export skill')
         self.layout.label(text='Shared offline lightmap tools: lightmap_tools/cli.py')
         self.layout.label(text='Usage: kadshow-blender-environments skill; external Python dependencies')
@@ -407,6 +420,7 @@ from . import materials # directory
 from . import world # must be defined before mesh
 from . import mesh
 from . import environment_controls
+from .env_converter_setup import BJS_OT_env_converter_setup, cancel_setup
 from .lightmap_grading import BJS_OT_lightmap_grading
 from .colour_adjustment import BJS_OT_colour_adjustment, BJS_OT_tint_selected
 
@@ -414,7 +428,7 @@ classes = (
     BJS_OT_colour_adjustment, BJS_OT_tint_selected,
     BJS_OT_lightmap_grading,
     # Operator sub-classes
-    BabylonExportPreferences,
+    BabylonExportPreferences, BJS_OT_env_converter_setup,
     JsonMain,
     environment_controls.BJS_OT_EnvironmentControls,
 
@@ -433,6 +447,7 @@ def register():
     bpy.types.TOPBAR_MT_file_export.append(menu_func)
 
 def unregister():
+    cancel_setup()
     from bpy.utils import unregister_class
     for cls in reversed(classes):
         unregister_class(cls)

@@ -24,23 +24,37 @@ def helper_path(override=''):
 
 
 @lru_cache(maxsize=8)
-def _probe(node, script, modified):
+def _probe(node, script, signature):
     try:
         r = subprocess.run([node, script, '--check'],capture_output=True,text=True,timeout=15,**process_options())
         data = json.loads(r.stdout) if r.returncode == 0 else {}
-        if data.get('status') != 'ready' or data.get('babylon') != '7.27.0':
-            return '', 'Configure the local ENV converter (Babylon 7.27 and Chromium required)'
+        if not isinstance(data,dict) or data.get('status') != 'ready' or data.get('babylon') != '7.27.0':
+            return '', 'ENV converter needs setup; use Preferences > Babylon.js > Set up / repair ENV converter'
         return node, 'Babylon 7.27 ENV converter ready'
     except (OSError, ValueError, subprocess.SubprocessError):
-        return '', 'Cannot run ENV converter; check Node, npm dependencies and Chromium'
+        return '', 'Cannot run ENV converter; run the explicit setup/repair action in Babylon.js Preferences'
 
 
 def find_converter(override=''):
     script = helper_path(override)
     node = shutil.which('node')
+    runtime = script.with_name('runtime.local.json')
+    if runtime.is_file():
+        try:
+            data = json.loads(runtime.read_text(encoding='utf8'))
+            configured_node = data.get('node') if isinstance(data,dict) else None
+            if configured_node and Path(configured_node).is_file():
+                node = str(configured_node)
+        except (OSError, ValueError, TypeError):
+            pass  # The converter check reports an invalid local config with setup guidance.
     if not node or not script.is_file():
         return '', str(script), 'Configure the ENV converter script and install Node.js'
-    executable, message = _probe(node,str(script),script.stat().st_mtime_ns)
+    # Setup changes dependencies/config without modifying convert.cjs itself.
+    inputs = [script, script.with_name('runtime.cjs'), script.with_name('runtime.local.json'),
+              script.parent/'node_modules/babylonjs/package.json',
+              script.parent/'node_modules/playwright-core/package.json']
+    signature = tuple(path.stat().st_mtime_ns if path.exists() else None for path in inputs)
+    executable, message = _probe(node,str(script),(signature,os.environ.get('BJS_ENV_CHROMIUM')))
     return executable, str(script), message
 
 

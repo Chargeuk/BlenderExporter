@@ -1,5 +1,6 @@
 """Build an installable legacy add-on ZIP using only the Python standard library."""
 import ast
+import os
 from pathlib import Path
 import zipfile
 
@@ -15,6 +16,9 @@ REQUIRED_TOOLS = (
     'workflow_tools/native_view_diagnostics.py',
     'workflow_tools/surface_equivalence.py',
     'workflow_tools/uv_tint_filter.py',
+    'env_converter_setup.py',
+    'workflow_tools/env_converter/setup.py',
+    'workflow_tools/env_converter/runtime.cjs',
     'workflow_tools/env_converter/convert.cjs',
     'workflow_tools/env_converter/package.json',
     'workflow_tools/env_converter/package-lock.json',
@@ -54,11 +58,16 @@ def build(root=None, output=None):
     out = Path(output) if output is not None else root / ('dist/Blender2Babylon-' + version + '-blender52.zip')
     out.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
-        for file in sorted(source.rglob('*')):
-            # Codex skills own Markdown instructions; caches are never runtime assets.
-            if (file.is_file() and '__pycache__' not in file.parts
-                    and file.suffix.lower() not in ('.pyc', '.pyo', '.md')):
-                archive.write(file, file.relative_to(root / 'src').as_posix())
+        # Prune installed dependencies before traversing: they are local setup state,
+        # never release assets, even when building from an already configured add-on.
+        for current, directories, filenames in os.walk(source):
+            directories[:] = sorted(name for name in directories
+                                     if name.lower() not in ('node_modules', '__pycache__', '.git'))
+            for name in sorted(filenames):
+                file = Path(current)/name
+                if (file.suffix.lower() not in ('.pyc', '.pyo', '.md')
+                        and name.lower() not in ('runtime.local.json', 'setup.local.log')):
+                    archive.write(file, file.relative_to(root / 'src').as_posix())
     return out
 
 

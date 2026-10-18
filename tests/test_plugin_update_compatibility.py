@@ -69,7 +69,7 @@ class PluginUpdateCompatibilityTests(unittest.TestCase):
             factor_from_captures(base, diffuse, labels, catalogue, catalogue, [], [], native_ids=changed)
 
     def test_packaged_env_converter_keeps_latest_upstream_source_and_lock(self):
-        for name in ('convert.cjs', 'package.json', 'package-lock.json'):
+        for name in ('convert.cjs', 'runtime.cjs', 'setup.py', 'package.json', 'package-lock.json'):
             self.assertEqual((ADDON/'workflow_tools/env_converter'/name).read_bytes(),
                              (ROOT/'tools/env-converter'/name).read_bytes())
         metadata = json.loads((ADDON/'workflow_tools/env_converter/package.json').read_text())

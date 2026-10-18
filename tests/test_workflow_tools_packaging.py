@@ -46,6 +46,28 @@ class WorkflowPackagingTests(unittest.TestCase):
                 self.assertNotIn('babylon_js/workflow_tools/__pycache__/helper.pyc', names)
                 self.assertNotIn('babylon_js/workflow_tools/helper.pyo', names)
 
+    def test_local_env_dependencies_and_browser_config_never_enter_release(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root/'src/babylon_js'
+            shutil.copytree(ADDON, source)
+            converter = source/'workflow_tools/env_converter'
+            installed = converter/'node_modules/babylonjs'
+            installed.mkdir(parents=True)
+            (installed/'babylon.js').write_text('local dependency must not ship')
+            nested = source/'environment_tools/nested/node_modules/transitive'
+            nested.mkdir(parents=True)
+            (nested/'index.js').write_text('nested dependency must not ship')
+            (converter/'runtime.local.json').write_text('{"browser":"machine-specific path"}')
+            (converter/'setup.local.log').write_text('local install diagnostics')
+            with zipfile.ZipFile(builder.build(root, root/'addon.zip')) as package:
+                self.assertFalse(any('node_modules' in Path(name).parts for name in package.namelist()))
+                for name in ('runtime.local.json', 'setup.local.log'):
+                    self.assertNotIn('babylon_js/workflow_tools/env_converter/'+name, package.namelist())
+                for name in ('setup.py', 'runtime.cjs'):
+                    self.assertEqual(package.read('babylon_js/workflow_tools/env_converter/'+name),
+                                     (converter/name).read_bytes())
+
     def test_incomplete_workflow_refused_before_output_creation(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

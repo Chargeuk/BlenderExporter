@@ -7,3 +7,8 @@ __pycache__/
 /artifacts/
 /dist/
 /*.log
+# ENV setup writes machine-local browser selection and diagnostics, never release inputs.
+/src/babylon_js/workflow_tools/env_converter/runtime.local.json
+/src/babylon_js/workflow_tools/env_converter/setup.local.log
+/tools/env-converter/runtime.local.json
+/tools/env-converter/setup.local.log

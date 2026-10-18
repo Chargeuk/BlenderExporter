@@ -1,5 +1,9 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.33 (18 October 2026)
+
+- Adds explicit local setup and readiness checks for the optional Babylon ENV converter. Locked dependencies are installed only on request, and downloading Playwright Chromium requires a separate opt-in.
+
 ## Blender exporter 3.3.32 (18 October 2026)
 
 - Adds an explicit `--skip-trial` option for capture jobs whose user waives the normal coarse-grid review. It records a signature-bound skipped status without claiming a passed trial; default trial gating and all source and clearance checks remain.

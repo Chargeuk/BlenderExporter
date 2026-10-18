@@ -1,6 +1,6 @@
 # Blender to Babylon.js exporter
 
-## Chargeuk fork: version 3.3.32
+## Chargeuk fork: version 3.3.33
 
 This fork maintains the Babylon.js Blender exporter and packages workflows for Blender 5.2. The add-on retains the scene and material exporter and adds optional texture delivery and environment-lighting tools.
 
@@ -23,6 +23,8 @@ python tools/package_addon.py
 ```
 
 The script writes `dist/Blender2Babylon-<version>-blender52.zip`. In Blender, install that ZIP from Preferences > Add-ons > Install from Disk, then enable **Babylon.js**. After replacing an installed add-on, re-enable it or restart Blender before relying on the new code.
+
+The optional room HDR-to-ENV converter needs Node.js 18+ and a compatible existing Chromium/Chrome browser. After installing or upgrading the add-on, run **Set up / repair ENV converter** in the add-on Preferences, or run the installed `workflow_tools/env_converter/setup.py` with external Python 3.8+. Setup installs the locked converter dependencies beside the selected converter and checks WebGL2; it does not download a browser unless explicitly allowed. The setup guide in the `blender-live-workflow` skill documents headless commands and overrides. Converter dependencies and local browser settings live beside the installed add-on and are excluded from the ZIP.
 
 ## Workflow references
 
