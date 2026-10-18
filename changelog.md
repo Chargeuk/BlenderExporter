@@ -1,11 +1,21 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.31 (18 October 2026)
+
+This cumulative fork update records changes since the last documented fork entry, 3.3.8.
+
+- Extends RGBD lightmap delivery with per-pixel or image-wide divisor modes, optional region policies, and per-texture codec selection while preserving the explicit `rgbd-v1` metadata contract.
+- Adds AgX lightmap preparation and split-lighting preview controls, including separate AO grading and physical colour adjustment workflows.
+- Packages saved-scene environment helpers for preparation and native baking, ownership and freshness checks, receiver response capture, and camera review.
+- Adds optional direct spatial-light export and simple or advanced RGBD environment-lighting volumes alongside KTX2, Basis skybox, and ENV delivery.
+- Includes reusable workflow tools in the installable Blender add-on package. Build the versioned Blender 5.2 ZIP with `python tools/package_addon.py`.
+
 ## Blender exporter 3.3.8 (22 September 2026)
 
 - Opt-in RGBD HDR lightmaps, retaining legacy defaults; explicit encoding metadata and a compression-safe minimum divisor.
 - Canonical KaDshow lightmap filenames to prevent repeated-prefix URL mismatches.
 - Explicit opaque PBR serialization and shared opaque/cutout alpha preservation.
-- Numeric, real Blender/KTX and Chromium/WebGL regression checks; see docs/KTX2_EXPORT.md.
+- Numeric, real Blender/KTX and Chromium/WebGL regression checks. See [the current KaDshow integration boundaries](docs/KADSHOW_EXPORT_GAPS.md).
 
 ## Blender 3.3.2 ##
 * 31 August 2023

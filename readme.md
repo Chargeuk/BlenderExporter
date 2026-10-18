@@ -1,44 +1,35 @@
 # Blender to Babylon.js exporter
 
-## Chargeuk fork: Blender 5.2, KTX2 and Basis skybox export
+## Chargeuk fork: version 3.3.31
 
-Version 3.3.19 packages the reusable Python workflow helpers in `babylon_js/workflow_tools`. Their usage instructions are maintained in the corresponding Codex skills.
+This fork maintains the Babylon.js Blender exporter and packages workflows for Blender 5.2. The add-on retains the scene and material exporter and adds optional texture delivery and environment-lighting tools.
 
-Version 3.3.14 adds saved-scene preparation (see the `kadshow-blender-environments` Codex skill): role-based Cycles baking, preserved UV ownership, isolated processing, native lighting combination, verified capture freshness, thumbnails and resumable restoration. Its preview initializer (see the `blender-texture-authoring` Codex skill) creates the standard adjustable graph; disk-image replacement handles packed and nested samplers.
+Current fork features include:
 
-Version3.3.13 packages the shared lightmap processor (see the `kadshow-blender-environments` Codex skill), with an independent CLI and dependency checks. Environment projects keep their settings and recipes, not script copies.
+- KTX2 conversion for material textures and lightmaps, with `rgbd-v1` lightmap encoding, per-map codec settings, divisor modes, and optional region-specific encoding.
+- Optional Basis skybox and Babylon ENV conversion for prepared panoramas.
+- Split direct/indirect lightmap preview and AO grading, physical colour adjustment, and AgX-compensated lightmap preparation.
+- Saved-scene environment helpers for preparation, baking and ownership checks, receiver response, camera capture, spatial lighting, and simple or advanced environment-lighting volumes.
+- Reusable Python workflow tools included in the installable add-on package.
 
-Version3.3.12 adds native World environment controls (see the `kadshow-hdr-environment` Codex skill): one original HDRI, separate lighting/visible-sky brightness, and temporary skybox preparation.
+These options are purpose-built for prepared environments. Their presence does not make arbitrary KaDshow scenes or client runtime packages automatically compatible; see [the KaDshow integration contract and boundaries](docs/KADSHOW_EXPORT_GAPS.md).
 
-Version3.3.11 adds a persistent Export Tangents switch (see the `kadshow-environment-export` Codex skill). Disable it for KaDshow environments to reduce file size and keep merge-compatible vertex layouts.
+## Build and install
 
-Version3.3.10 adds lightmap export sizes (see the `kadshow-environment-export` Codex skill) and saved lighting-node dialog defaults (see the `kadshow-environment-export` Codex skill). Current PBR defaults are metallic1.0 / roughness0.8.
+Build the versioned Blender 5.2 add-on ZIP with:
 
+```powershell
+python tools/package_addon.py
+```
 
-PBR export defaults are metallic **1.0** / roughness **0.8**. Editable multipliers preserve Blender source materials; see material controls and tests (see the `blender-texture-authoring` Codex skill).
+The script writes `dist/Blender2Babylon-<version>-blender52.zip`. In Blender, install that ZIP from Preferences > Add-ons > Install from Disk, then enable **Babylon.js**. After replacing an installed add-on, re-enable it or restart Blender before relying on the new code.
 
-Version 3.3.6 adds optional **Export KaDshow environment lighting**: a saved room EXR/HDR becomes a validated `environment.env`, with selectable face size defaulting to **512**, exposure/highlight controls and a delivery-only `hasenv` marker. See ENV setup, capture contract and tests (see the `kadshow-environment-export` Codex skill). The local converter requires Node.js, the pinned Babylon helper and Chromium; it does not start a Blender render.
+## Workflow references
 
-Version 3.3.5 added optional **Export KaDshow skybox** with selectable square face sizes, default **1024**, panorama conversion and validated `cubemap.basis` delivery. See skybox settings and tests (see the `kadshow-environment-export` Codex skill). It requires Basis Universal and works independently or alongside **Convert textures to KTX2**, introduced in 3.3.4. See KTX2 setup, controls and tests (see the `kadshow-environment-export` Codex skill). All three options are off by default; material conversion requires KTX-Software 4.4.2+.
+The detailed environment procedures and settings live in their owning Codex skills: `kadshow-blender-environments`, `kadshow-environment-export`, `kadshow-hdr-environment`, and `blender-texture-authoring`. The repository includes a [historical Blender 5.2 compatibility audit](docs/BLENDER_52.md) and [client integration boundaries](docs/KADSHOW_EXPORT_GAPS.md).
 
-The fork has been tested with Blender 5.2.2 LTS on a static KaDshow environment. See [Blender compatibility fixes](docs/BLENDER_52.md) and [the KaDshow import contract and remaining asset gaps](docs/KADSHOW_EXPORT_GAPS.md). Build the updated add-on with `python tools/package_addon.py`; the older root ZIP is historical.
-
-**Note:** With the new Blender 4 release LTS schedule (X0, X1, X2, X3 LTS), the master branch of this repo will have the zip distribution file for the last LTS, currently 2.83 LTS.  Versions for the next cycle, if available, will be on the `dev` branch.
-
-## Documentation
-See the [exporters documentation](https://doc.babylonjs.com/extensions/Exporters) to:
-
-- know [how to install](https://doc.babylonjs.com/extensions/Exporters/Blender)
-- learn the [features](https://doc.babylonjs.com/extensions/Exporters/Blender#installation)
-- read some [tips](https://doc.babylonjs.com/extensions/Exporters/Blender_Tips)
-
-If you think something missing in the Blender exporter documentation, please report it through github issues, or in this [forum thread](http://www.html5gamedevs.com/topic/36596-blender-exporter-doc-needs-feedback/).
+For upstream exporter concepts and the Blender installation interface, see the [Babylon.js Exporters documentation](https://doc.babylonjs.com/extensions/Exporters) and its [Blender exporter page](https://doc.babylonjs.com/extensions/Exporters/Blender).
 
 ## Changelog
 
-Changelog can be [found here](https://github.com/BabylonJS/BlenderExporter/blob/master/changelog.md).
-
-
-## KaDshow lighting profiles
-
-Exporter 3.3.9 writes versioned runtime lighting settings on lightmap markers, defaults to metallic/roughness multipliers 1.0/0.8, and supports an explicit Original mode for older bakes. See lighting profile and debug controls (see the `kadshow-environment-export` Codex skill).
+See the [fork changelog](changelog.md).

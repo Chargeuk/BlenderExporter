@@ -1,10 +1,12 @@
-# Blender 5.2 compatibility and bedroom export
+# Blender 5.2 compatibility audit
 
-Compatibility evidence below describes the original Blender 5.2 investigation. Use the current package and linked manuals for environment preparation/export.
+This page preserves the original compatibility investigation as historical evidence; its baseline version and test date describe that investigation, not the current add-on release.
 
-Tested 2026-09-21 with Blender **5.2.2 LTS / Python 3.13.13** and the current KaDshow Babylon **7.27.0** dependency. Fork baseline: `949d71f7a0d1e53aa768f3da0e6ba3c25022c99d`. Local add-on version: **3.3.3**.
+## Historical audit: 21 September 2026
 
-## Changes
+Tested with Blender **5.2.2 LTS / Python 3.13.13** and the KaDshow Babylon **7.27.0** dependency. Fork baseline: `949d71f7a0d1e53aa768f3da0e6ba3c25022c99d`. The add-on was version **3.3.3** at that baseline.
+
+### Changes recorded by that audit
 
 - Replace removed Python `imp` imports with `importlib` in the add-on reload paths.
 - Support old/current Principled names for subsurface, specular IOR level, coat, sheen and emission. Accept current colour-valued Sheen Tint.
@@ -14,22 +16,10 @@ Tested 2026-09-21 with Blender **5.2.2 LTS / Python 3.13.13** and the current Ka
 - Escape JSON strings correctly and fix fractional Empty metadata serialization. Existing unsupported metadata types are still reported/omitted; this does not add a new custom-property schema.
 - Return `CANCELLED` when the exporter reports a fatal/data error instead of advertising `FINISHED`.
 
-This is verified static-scene compatibility, not certification of every old feature. Armatures, action/shape-key animation, internal procedural baking, every shader feature and all Blender versions have not been revalidated. Socket compatibility does not guarantee identical Blender/Babylon BRDF appearance.
+This is a static-scene compatibility audit, not certification of every old feature. Armatures, action/shape-key animation, internal procedural baking, every shader feature and all Blender versions were not revalidated by that investigation. Socket compatibility does not guarantee identical Blender/Babylon BRDF appearance.
 
-## Install and current environment workflow
+## Current package: 3.3.31
 
-Build using `python tools/package_addon.py`; install the versioned ZIP it reports
-through Blender Preferences and enable Babylon.js. Verify the running add-on
-after an update; the fork keeps the `babylon_js` package name.
+The current add-on ZIP is built with `python tools/package_addon.py`; install the versioned ZIP it creates and enable Babylon.js in Blender Preferences. The package retains the `babylon_js` module name. A Blender 5.2.2 factory-startup smoke confirmed add-on registration, the export operator, packaged helper imports and clean unregister; this is a startup check, not a full feature or delivery validation.
 
-Use `content/environments/grandBedroomDay/blender/README.md` and
-`ACCEPTED_RESULT.json` for current accepted scene/package identities. Preserve
-physical PBR source materials; an emission preview is unsuitable as the physical
-export source. Include explicit delivery/helper/ancestor selection and
-six-decimal geometry/UV precision.
-
-See preparation (see the `kadshow-blender-environments` Codex skill), RGBD/KTX2 (see the `kadshow-environment-export` Codex skill),
-lighting (see the `kadshow-environment-export` Codex skill), geometry (see the `kadshow-environment-export` Codex skill),
-skybox (see the `kadshow-environment-export` Codex skill) and ENV (see the `kadshow-environment-export` Codex skill) for current settings.
-`tests/test_blender_compat.py` remains an independent compatibility fixture.
-Historical bedroom experiment scripts are not current production recipes.
+See the detailed current environment procedures in the owning Codex skills: `kadshow-blender-environments`, `kadshow-environment-export`, `kadshow-hdr-environment`, and `blender-texture-authoring`. `tests/test_blender_compat.py` remains an independent compatibility fixture. Historical bedroom experiment scripts are not current production recipes.

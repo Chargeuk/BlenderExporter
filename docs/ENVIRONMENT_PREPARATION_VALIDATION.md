@@ -1,5 +1,7 @@
 # Shared preparation restoration test — 22 September 2026
 
+Historical validation record: the implementation version and evidence below describe the 3.3.14 work, not the current 3.3.31 package.
+
 Implemented with BlenderExporter **3.3.14**, based on committed/pushed 297d310.
 The shared implementation is included in the 3.3.14 source/package. The tests below identify the verified behaviour; inspect Git history for the published revision.
 
