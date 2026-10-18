@@ -142,6 +142,8 @@ def pack_atlas(volume):
 
 def validate_record(record):
     from .spatial_lighting import finite
+    if 'pathBase' in record and record['pathBase'] != 'receipt':
+        raise ValueError('Unsupported volume receipt path base')
     if type(record.get('version')) is not int or record['version'] != 1:
         raise ValueError('Environment lighting volume receipt version must be 1')
     if record.get('dimensions') != DIMENSIONS or record.get('atlasColumns') != 4 or record.get('atlasRows') != 4 or record.get('atlasLayout') != LAYOUT:
@@ -218,14 +220,16 @@ def payload(record, texture_sha256, min_divisor, strength=1):
         sampling='texel-centered-trilinear', normalization=record['normalization'])
 
 
-def validate_source(context, record, environment_options=None):
+def validate_source(context, record, environment_options=None, receipt_path=None):
     import bpy
     import sys
     from . import ktx_conversion as core, environment_controls
     sys.path.insert(0, str(Path(__file__).parent / 'environment_tools'))
     from .environment_tools.appearance import preview_identity, verify_combination
     from .environment_tools.ao import geometry_identity
-    source = record['source']
+    from .environment_tools.volume_relocation import package_paths, validate_relocation
+    source = package_paths(record, receipt_path)
+    validate_relocation(context, record, receipt_path)
     for key in ('scene', 'scopeRecipe', 'combined', 'combinedProvenance', 'reference'):
         path = Path(source[key])
         if not path.is_file() or core.sha(path) != source[key + 'Sha256']:
@@ -285,7 +289,7 @@ def export_volume(context, model, work, package, options, ktx, threads=8, enviro
     metadata = marker_metadata(model)
     receipt = Path(bpy.path.abspath(options['config'])).resolve()
     record = validate_record(core.read_json(receipt))
-    validate_source(context, record, environment_options)
+    validate_source(context, record, environment_options, receipt)
     source = Path(bpy.path.abspath(options['image'])).resolve() if options.get('image') else (receipt.parent / record['master']).resolve()
     report = _export_texture(source, record['masterSha256'], FILENAME, [128,128], work, package, ktx, threads)
     report['receipt'] = str(receipt)

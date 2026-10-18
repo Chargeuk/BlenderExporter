@@ -186,7 +186,7 @@ def check_physical_world_routing(c, controls, output):
             'validation': 'Exact direct links and same controls node; no relevant muted route nodes; no rewiring performed'}
 
 
-def preflight(c):
+def preflight(c, *, allow_missing_generated=False):
     s=bpy.context.scene; receivers=select(c,'receivers'); contributors=select(c,'contributors')
     if not receivers:raise ValueError('No bake receivers selected')
     if set(receivers)&set(contributors):raise ValueError('Receiver and contributor sets overlap')
@@ -228,18 +228,21 @@ def preflight(c):
     output=next(n for n in s.world.node_tree.nodes if n.type=='OUTPUT_WORLD' and n.is_active_output)
     world_routing=check_physical_world_routing(c,node,output)
     if c.get('preview_material') not in bpy.data.materials:raise ValueError('Missing configured preview material')
-    if c.get('ao',{}).get('enabled'):
-        from babylon_js.lightmap_grading import upgrade
-        # Fail before an expensive bake if an old/custom preview cannot be migrated.
-        # This worker is disposable; the saved authoring scene is never changed.
-        upgrade(bpy.data.materials[c['preview_material']],uv=c.get('uv','SimpleBake'))
-    resolution=check_preview_resolution(c)
+    from image_binding import missing_generated_preflight
+    with missing_generated_preflight(c, allow_missing_generated) as placeholders:
+        if c.get('ao',{}).get('enabled'):
+            from babylon_js.lightmap_grading import upgrade
+            # Fresh missing maps need dimensions only here; no placeholder reaches
+            # a later worker, bake, saved source, or accepted lighting result.
+            upgrade(bpy.data.materials[c['preview_material']],uv=c.get('uv','SimpleBake'))
+        resolution=check_preview_resolution(c)
     return {'scene':s.name,'receiver_count':len(receivers),'triangles':triangles,'receivers':[o.name for o in receivers],
         'contributors':[o.name for o in contributors],'visible_only_emitters':[o.name for o in emitters],'excluded_glass':[o.name for o in select(c,'glass')],
         'world_controls':world_tools.settings(node),'physical_world_routing':world_routing,
         'missing_source_images':missing,'blender_version':bpy.app.version_string,
         'samples':c['samples'],'quality':c.get('quality','final'),'preview_resolution':resolution,
-        'image_dependencies':image_scope}
+        'image_dependencies':image_scope,'preflight_placeholders':placeholders,
+        'requires_full_bake':bool(placeholders)}
 
 
 def evaluate_receivers(c):
@@ -552,7 +555,13 @@ def main():
     if (root/'native_recombine.provenance.json').is_file():
         from native_recombine import verify_copied
         verify_copied(c,root)
-    if command=='preflight':result=preflight(c)
+    if command=='preflight':
+        fresh=args[4:]==['--fresh-generated-preflight']
+        if fresh:
+            manifest=json.loads((root/'build.json').read_text())
+            if manifest['inputs'].get('reuse_lightmaps') is not False or (root/'native_recombine.provenance.json').exists():
+                raise ValueError('Missing-map dimension preparation is fresh/no-reuse only')
+        result=preflight(c,allow_missing_generated=fresh)
     elif command=='native-recombine-check':
         from native_recombine import verify_copied
         result=verify_copied(c,root)

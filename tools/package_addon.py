@@ -33,6 +33,7 @@ REQUIRED_TOOLS = (
     'environment_tools/physical_colour_adjustment.py',
     'environment_tools/recipe_cli.py',
     'environment_tools/volume_capture.py',
+    'environment_tools/volume_relocation.py',
     'environment_lighting_volume.py',
     'environment_tools/uv_geometry.py',
     'environment_tools/uv_prepare.py',

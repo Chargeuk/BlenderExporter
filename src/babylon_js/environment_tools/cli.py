@@ -196,6 +196,8 @@ def main():
         args=[a.blender,'--background','--factory-startup',c['_source'],'--python-exit-code','1',
              '--python',HERE/'worker.py','--',a.config.resolve(),command,root,directory]
         if command=='env':args.append(a.env_converter.resolve())
+        if command=='preflight' and not a.reuse_lightmaps and native_plan is None:
+            args.append('--fresh-generated-preflight')
         run(args,directory/'blender.log')
 
     def exr(array, name, directory):
