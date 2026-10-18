@@ -133,8 +133,10 @@ def physical(config_path, args):
     update_preview_resolution(preview);validate_preview_resolution(preview,(args.size,args.size))
     scene=bpy.context.scene
     from babylon_js.environment_tools.ao import geometry_identity
-    original_geometry=geometry_identity(cfg)
     receivers=role_objects(scene,cfg['receivers']);contributors=role_objects(scene,cfg['contributors']);lights=role_objects(scene,cfg['bake_lights'])
+    excluded=[obj.name for obj in receivers+contributors+lights if obj.name not in bpy.context.view_layer.objects]
+    require(not excluded, 'Physical participants excluded from active view layer: '+', '.join(sorted(excluded)))
+    original_geometry=geometry_identity(cfg)
     default=bpy.data.materials[scene[policy['default_material_property']]];default.use_fake_user=True
     specials=[];metal_receivers=set(role_objects(scene,cfg.get('metal_receivers')))
     for obj in scene.objects:
@@ -155,7 +157,8 @@ def physical(config_path, args):
                         require(any(n.type=='VALUE' and n.outputs and abs(float(n.outputs[0].default_value)-policy['override_value'])<1e-6
                                     for n in material.node_tree.nodes), 'Physical override value differs: '+obj.name)
                     specials.append(obj.name)
-            obj.hide_render=obj not in receivers+contributors;obj.hide_set(obj.hide_render)
+            obj.hide_render=obj not in receivers+contributors
+            if obj.name in bpy.context.view_layer.objects:obj.hide_set(obj.hide_render)
         elif obj.type=='LIGHT':obj.hide_render=obj not in lights
     counts={'receivers':len(receivers),'overrides':len(specials),'contributors':len(contributors),'lights':len(lights)}
     for key,count in policy.get('expected_counts',{}).items(): require(counts[key]==count,'Physical selection count mismatch: '+key)
