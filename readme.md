@@ -1,6 +1,6 @@
 # Blender to Babylon.js exporter
 
-## Chargeuk fork: version 3.3.31
+## Chargeuk fork: version 3.3.32
 
 This fork maintains the Babylon.js Blender exporter and packages workflows for Blender 5.2. The add-on retains the scene and material exporter and adds optional texture delivery and environment-lighting tools.
 

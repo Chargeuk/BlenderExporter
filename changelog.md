@@ -1,5 +1,9 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.32 (18 October 2026)
+
+- Adds an explicit `--skip-trial` option for capture jobs whose user waives the normal coarse-grid review. It records a signature-bound skipped status without claiming a passed trial; default trial gating and all source and clearance checks remain.
+
 ## Blender exporter 3.3.31 (18 October 2026)
 
 This cumulative fork update records changes since the last documented fork entry, 3.3.8.

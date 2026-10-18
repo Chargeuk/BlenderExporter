@@ -2,6 +2,7 @@
 
 blender -b SOURCE.blend --python volume_capture.py -- --config RECIPE --phase trial
 Review trial panoramas/clearance before repeating with --phase capture.
+An explicit --skip-trial on capture records the user's waiver without a pilot.
 """
 import argparse
 import json
@@ -232,7 +233,35 @@ def derive(config_path, receipt_path, output, orientation_path):
     print('VOLUME_ADVANCED_READY '+str(output/'volume_receipt.json'),flush=True)
 
 
-def run(config_path, phase):
+def prepare_output(output, signature, phase, skip_trial=False):
+    """Bind fresh/resumed output to the same inputs and explicit trial policy."""
+    from common import save_json
+    if skip_trial and phase != 'capture':
+        raise ValueError('--skip-trial is only supported with --phase capture')
+    if phase == 'trial':
+        output.mkdir(parents=True, exist_ok=False)
+        save_json(output/'capture_inputs.json', signature)
+        return None
+    if skip_trial and not output.exists():
+        output.mkdir(parents=True)
+        save_json(output/'capture_inputs.json', signature)
+        # A waiver must never masquerade as a passing trial or invent probes.
+        save_json(output/'trial.json', dict(status='skipped', source=signature['source'],
+            explicitUserOverride=True, reason='User explicitly requested --skip-trial for full capture', probes=[]))
+    if json.loads((output/'capture_inputs.json').read_text()) != signature:
+        raise ValueError('Capture inputs changed; use a fresh output and repeat the selected trial policy')
+    trial = json.loads((output/'trial.json').read_text())
+    if skip_trial:
+        if trial.get('status') != 'skipped' or trial.get('explicitUserOverride') is not True or trial.get('source') != signature['source'] or trial.get('probes') != []:
+            raise ValueError('Capture resume requires the matching explicit skipped-trial receipt')
+    elif trial.get('status') != 'passed':
+        raise ValueError('Reviewable trial captures must pass before full capture')
+    if (output/'volume_receipt.json').exists():
+        raise ValueError('Preserve completed volume; choose a new output')
+    return trial
+
+
+def run(config_path, phase, skip_trial=False):
     import bpy
     import numpy as np
     from common import sha, save_json
@@ -285,15 +314,7 @@ def run(config_path, phase):
         geometrySha256=identity['geometry_sha256'], worldControls=world, worldImageSha256=sha(world['image']))
     output = resolve('output_dir')
     signature = dict(configSha256=sha(config_path), source=inputs)
-    if phase == 'trial':
-        output.mkdir(parents=True, exist_ok=False)
-        save_json(output/'capture_inputs.json', signature)
-    else:
-        if json.loads((output/'capture_inputs.json').read_text()) != signature:
-            raise ValueError('Trial inputs changed; use a fresh output and repeat trial')
-        if json.loads((output/'trial.json').read_text()).get('status') != 'passed':
-            raise ValueError('Reviewable trial captures must pass before full capture')
-        if (output/'volume_receipt.json').exists(): raise ValueError('Preserve completed volume; choose a new output')
+    trial = prepare_output(output, signature, phase, skip_trial)
     masters = output/'masters'; masters.mkdir(exist_ok=True)
     import shutil
     for original, filename in ((combined, 'combined.exr'), (provenance, 'combined.provenance.json')):
@@ -362,7 +383,6 @@ def run(config_path, phase):
         return
     grid=np.ones((nz,ny,nx,4),np.float32); grid[...,:3]=np.nan
     advanced_grid=np.ones((6,nz,ny,nx,4),np.float32); advanced_grid[...,:3]=np.nan
-    trial=json.loads((output/'trial.json').read_text())
     pilot={tuple(p['index']):output/p['directory'] for p in trial['probes']}
     completed=0; probes=output/'probes';probes.mkdir(exist_ok=True)
     total=int(valid.sum()); checkpoints=[]
@@ -374,6 +394,8 @@ def run(config_path, phase):
         advanced_grid[:,z,y,x,:3]=relative_hemispheres(pixels,reference_hemispheres)
         checkpoints.append(dict(directory=str(directory.relative_to(output)),probeSha256=sha(directory/'probe.json'),panoramaSha256=result['panoramaSha256']))
         completed+=1
+        if completed == 1 and skip_trial:
+            preview(output/'capture_00_panorama.png', pixels, max(1,512//size))
         if completed==1 or completed%8==0 or completed==total:
             # Magenta denotes unmeasured cells; it is preview-only and never
             # enters nearest filling, interpolation, or the linear EXR master.
@@ -403,7 +425,9 @@ def run(config_path, phase):
         storage=dict(rawVoxelIndex='((z*dimY+y)*dimX+x)*4',blenderToBabylon='XZY',atlasTile='X right; Z down; Y slices row-major',
             texelCenters='voxel position=min+(index+0.5)/dimensions*(max-min); normalized3D=(position-min)/(max-min), sampled directly with clamp-to-edge; no endpoint remapping',
             atlasSampling='grid=normalized3D*dimensions-0.5; clamp grid to [0,dimensions-1]; tile UV=(tileOrigin+clampedGridXZ+0.5)/atlasDimensions; interpolate adjacent Y slices; never filter between tiles'),
-        previews=dict(slices='volume_slices.png',panorama='trial_00_panorama.png',display='Fixed Reinhard then sRGB; neutral ratio 1 maps to approximately 0.735 sRGB; no local minmax'))
+        previews=dict(slices='volume_slices.png',panorama='capture_00_panorama.png' if skip_trial else 'trial_00_panorama.png',display='Fixed Reinhard then sRGB; neutral ratio 1 maps to approximately 0.735 sRGB; no local minmax'))
+    if skip_trial:
+        record['capture']['trial'] = dict(status='skipped', explicitUserOverride=True, reason=trial['reason'], receipt='trial.json', receiptSha256=sha(output/'trial.json'))
     record['advanced']=write_advanced(advanced_grid,positions,valid,reference_hemispheres,bounds,output,
         dict(method='same captured panoramas as Simple; no additional probe renders',source=inputs,
             acceptedCaptureInputsSha256=sha(output/'capture_inputs.json'),validMaskSha256=sha(output/'coarse_valid_mask.npy'),checkpoints=checkpoints))
@@ -421,7 +445,9 @@ if __name__=='__main__':
     parser.add_argument('--receipt',type=Path)
     parser.add_argument('--output',type=Path)
     parser.add_argument('--orientation',type=Path)
+    parser.add_argument('--skip-trial',action='store_true',help='Explicit user override: capture the full grid without a trial; all source/clearance checks remain enabled')
     args=parser.parse_args(sys.argv[sys.argv.index('--')+1:])
+    if args.skip_trial and args.phase != 'capture':parser.error('--skip-trial requires --phase capture')
     if args.phase=='calibrate':
         if not args.output:parser.error('calibrate requires --output')
         calibrate(args.output)
@@ -430,4 +456,4 @@ if __name__=='__main__':
         derive(args.config,args.receipt,args.output,args.orientation)
     else:
         if not args.config:parser.error('trial/capture requires --config')
-        run(args.config,args.phase)
+        run(args.config,args.phase,args.skip_trial)
