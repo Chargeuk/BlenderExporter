@@ -54,6 +54,10 @@ def preparation_command(argv):
         return
     if not a.blender:p.error('Preparation requires --blender')
     config=json.loads(a.config.read_text(encoding='utf-8-sig'))
+    if command=='export' and config.get('volume_export_route') is not None and not a.audit_only:
+        from volume_assembly import run_pipeline
+        run_pipeline(a.config,a.output,a.blender)
+        return
     source=(a.config.parent/config['blend' if command in ('physical','albedo') else 'source']).resolve()
     if config.get('package_root'):source=Path(config['package_root'])/config['source']
     if not source.is_file():raise ValueError('Missing saved preparation source: '+str(source))

@@ -364,8 +364,12 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest='command',required=True)
     validate=sub.add_parser('validate');validate.add_argument('--recipe',required=True,type=Path);validate.add_argument('--output',required=True,type=Path);validate.add_argument('--ktx',required=True,type=Path)
     views=sub.add_parser('render-views');views.add_argument('--config',required=True,type=Path);views.add_argument('--candidate',required=True,type=Path);views.add_argument('--output',required=True,type=Path);views.add_argument('--blender',required=True,type=Path)
+    volume=sub.add_parser('audit-volumes');volume.add_argument('--recipe',required=True,type=Path);volume.add_argument('--output',required=True,type=Path);volume.add_argument('--ktx',required=True,type=Path)
     args=parser.parse_args()
-    if args.command=='validate':validate_delivery(args.recipe,args.output,args.ktx)
+    if args.command=='audit-volumes':
+        from volume_audit import audit
+        audit(args.recipe,args.output,args.ktx)
+    elif args.command=='validate':validate_delivery(args.recipe,args.output,args.ktx)
     else:
         output=args.output.resolve()
         if output.exists():raise ValueError('Use a new delivery view output directory')

@@ -101,7 +101,7 @@ def resize_lightmap(array, spec, hdr, *, owner_report_path=None):
 
 
 def rgbd_divisor_mode(value='per-pixel'):
-    if value not in ('per-pixel', 'image-wide'):
+    if value not in ('per-pixel', 'image-wide', 'block-4x4'):
         raise ValueError('Unsupported RGBD divisor mode: ' + str(value))
     return value
 
@@ -114,6 +114,9 @@ def encode_rgbd(rgb, divisor_mode='per-pixel', *, fixed_divisor=False):
     if fixed_divisor:
         divisor_mode = 'image-wide'
     rgb = np.asarray(rgb, dtype=np.float32)
+    if divisor_mode == 'block-4x4' and (rgb.ndim != 3 or rgb.shape[2] != 3 or
+            not rgb.shape[0] or not rgb.shape[1] or rgb.shape[0] % 4 or rgb.shape[1] % 4):
+        raise ValueError('Block RGBD requires nonempty HxWx3 RGB with dimensions divisible by four')
     if not np.isfinite(rgb).all() or np.any(rgb < 0) or np.any(rgb > 255):
         raise ValueError('RGBD requires finite nonnegative linear RGB in [0,255]; source is not clipped')
     peak = np.maximum(rgb.max(axis=-1), 1e-7)
@@ -122,6 +125,11 @@ def encode_rgbd(rgb, divisor_mode='per-pixel', *, fixed_divisor=False):
         # A uniform alpha floor avoids lossy alpha becoming a radiance multiplier.
         # Derive it after resizing from the whole accepted RGB image, never a crop.
         divisor = np.full(peak.shape, divisor.min(), dtype=np.float32)
+    elif divisor_mode == 'block-4x4':
+        # Share each codec block's safe divisor, as in region encoding, without
+        # requiring fictitious lightmap ownership for non-lightmap RGBD data.
+        h, w = peak.shape
+        divisor = divisor.reshape(h//4, 4, w//4, 4).min(axis=(1, 3)).repeat(4, 0).repeat(4, 1)
     encoded = np.concatenate((np.power(np.clip(rgb * divisor[..., None], 0, 1), 1 / 2.2), divisor[..., None]), axis=-1)
     pixels = np.rint(encoded * 255).astype(np.uint8)
     restored = np.power(pixels[..., :3].astype(np.float32) / 255, 2.2) / (pixels[..., 3:4].astype(np.float32) / 255)
@@ -131,7 +139,8 @@ def encode_rgbd(rgb, divisor_mode='per-pixel', *, fixed_divisor=False):
         rgbd_image_divisor_byte=int(pixels[..., 3].flat[0]) if divisor_mode == 'image-wide' else None,
         linear_min=float(rgb.min()), linear_max=float(rgb.max()),
         alpha_min=int(pixels[..., 3].min()), alpha_max=int(pixels[..., 3].max()),
-        rgbd_quantization_mae=float(error.mean()), rgbd_quantization_max_error=float(error.max()))
+        rgbd_quantization_mae=float(error.mean()), rgbd_quantization_max_error=float(error.max()),
+        **({'rgbd_block_size': [4, 4]} if divisor_mode == 'block-4x4' else {}))
 
 
 def texture_fields(node, location='$'):

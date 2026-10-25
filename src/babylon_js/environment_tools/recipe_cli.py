@@ -323,6 +323,30 @@ def refresh_export_preview(scene,options):
     return dict(validate_preview_resolution(material,expected),expected_input_size=list(expected) if expected else None)
 
 
+def validate_export_glass_rules(rules):
+    """Optional native RGB preservation is strict and validated before scene mutation."""
+    for rule in rules:
+        require(type(rule.get('preserve_rgb', False)) is bool,
+                'Glass preserve_rgb must be a boolean')
+
+
+def prepare_export_glass(materials, rules):
+    """Apply existing scalar-alpha compatibility in a disposable export process."""
+    validate_export_glass_rules(rules)
+    facts = {}
+    for rule in rules:
+        glass = materials[rule['material']]
+        principled = next(n for n in glass.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
+        alpha = float(principled.inputs['Alpha'].default_value)
+        rgb = tuple(principled.inputs['Base Color'].default_value[:3]) if rule.get('preserve_rgb', False) else (1, 1, 1)
+        principled.inputs['Base Color'].default_value = (*rgb, alpha)
+        glass.overloadChannels = True
+        if hasattr(glass, 'transparencyMode'):
+            glass.transparencyMode = str(rule['transparency_mode'])
+        facts[glass.name] = alpha
+    return facts
+
+
 def export(config_path,args):
     import bpy
     from babylon_js.colour_adjustment import settings as colour_settings
@@ -330,6 +354,7 @@ def export(config_path,args):
     from babylon_js.environment_tools.image_binding import replace_from_disk
     root,options,source,source_hash=background_source(config_path,'source');out=fresh_output(root,args.out)
     policy=options['preparation'];scene=bpy.context.scene
+    validate_export_glass_rules(policy.get('glass', []))
     for guard in options.get('bound_dependencies',[]):
         require(sha(resolve_input(root,options,guard['path']))==guard['sha256'],'Export dependency changed: '+guard['path'])
     source_geometry=check_source_geometry_association(root,options,source_hash)
@@ -387,14 +412,7 @@ def export(config_path,args):
     for key,value in policy.get('world_settings',{}).items():setattr(world,key,value)
     runtime.diffuse_color=tuple(policy.get('runtime_diffuse_color',[1,1,1,1]))
     if hasattr(runtime,'transparencyMode'):runtime.transparencyMode='0'
-    glass_facts={}
-    for rule in policy.get('glass',[]):
-        glass=bpy.data.materials[rule['material']]
-        principled=next(n for n in glass.node_tree.nodes if n.type=='BSDF_PRINCIPLED')
-        alpha=float(principled.inputs['Alpha'].default_value)
-        principled.inputs['Base Color'].default_value=(1,1,1,alpha);glass.overloadChannels=True
-        if hasattr(glass,'transparencyMode'):glass.transparencyMode=str(rule['transparency_mode'])
-        glass_facts[glass.name]=alpha
+    glass_facts=prepare_export_glass(bpy.data.materials, policy.get('glass', []))
     marker=scene.objects[policy['lightmap_marker']]
     require(marker in allowed,'Configured lightmap marker is not selected')
     combined=Path(bpy.path.abspath(marker[policy['lightmap_property']])).resolve()
@@ -407,6 +425,7 @@ def export(config_path,args):
         capture_association=str(association_path),capture_association_sha256=sha(association_path),lighting_profile=profile,
         colour_adjustment_enabled=bool(colour),colour_adjustment_strength=colour['strength'] if colour else 0,
         preview_resolution=preview_resolution,source_geometry=source_geometry,
+        volume_export_route=options.get('volume_export_route'),
         runtime_multipliers=options['material_multipliers'],glass_alpha=glass_facts,audit_only=args.audit_only,source_saved=False)
     conversion_kwargs,conversion_checks=export_conversion_settings(root,options,colour)
     selection['conversion']=conversion_checks
@@ -425,7 +444,9 @@ def export(config_path,args):
             basis_executable=tools['basisu'],
             environment_converter=tools['env_converter'],environment_image=str(capture))
         kwargs.update(conversion_kwargs)
-        result=bpy.ops.export.bjs(**kwargs)
+        from volume_assembly import without_saved_volume
+        with without_saved_volume(world, options):
+            result=bpy.ops.export.bjs(**kwargs)
         require('FINISHED' in result,'Exporter did not finish: '+str(result))
         verify_integrated_stage(config_path,out,regions=conversion_checks['regions'],colour=conversion_checks['colour'],
             expected_colour_codec=conversion_checks['colour_codec'])

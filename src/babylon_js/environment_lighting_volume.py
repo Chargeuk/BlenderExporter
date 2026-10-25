@@ -16,8 +16,13 @@ def saved_options(world):
     """A saved association is the opt-in; absent config keeps exports unchanged."""
     config = world.get('bjs_environment_lighting_volume_config', '')
     if not config: return None
-    return dict(config=config, image=world.get('bjs_environment_lighting_volume_image', ''),
+    result = dict(config=config, image=world.get('bjs_environment_lighting_volume_image', ''),
         strength=world.get('bjs_environment_lighting_volume_strength', 1))
+    simple_mode = world.get('bjs_environment_lighting_volume_simple_divisor_mode')
+    if simple_mode is not None: result['simple_divisor_mode'] = simple_mode
+    policy = world.get('bjs_environment_lighting_volume_advanced_alpha_policy')
+    if policy is not None: result['advanced_alpha_policy'] = policy
+    return result
 
 
 def marker_metadata(model):
@@ -256,42 +261,121 @@ def validate_source(context, record, environment_options=None, receipt_path=None
             raise ValueError('Volume requires the accepted neutral ENV conversion settings')
 
 
-def _export_texture(source, source_sha256, filename, dimensions, work, package, ktx, threads, *, fixed_divisor=False):
+def read_prepared_volume_rgba(prepared):
+    """Read RGBD data bytes without associating RGB with the divisor alpha."""
+    import numpy as np
+    import OpenImageIO as oiio
+    prepared = Path(prepared)
+    try:
+        header = prepared.read_bytes()[:29]
+    except OSError as error:
+        raise ValueError('Cannot read volume prepared PNG: ' + str(prepared)) from error
+    if len(header) < 29 or header[:8] != b'\x89PNG\r\n\x1a\n' or header[24:26] != bytes((8, 6)):
+        raise ValueError('Volume preparation requires actual PNG RGBA8')
+    config = oiio.ImageSpec()
+    config.attribute('oiio:UnassociatedAlpha', 1)
+    config.attribute('oiio:reorient', 0)
+    image = oiio.ImageBuf(str(prepared), 0, 0, config)
+    pixels = image.get_pixels(oiio.UINT8)
+    if pixels is None or str(image.spec().format) != 'uint8' or pixels.ndim != 3 or pixels.shape[2] != 4 or not pixels.size:
+        raise ValueError('Cannot decode volume prepared PNG as RGBA8: ' + image.geterror())
+    if pixels.dtype != np.uint8:
+        raise ValueError('Volume prepared PNG must retain uint8 data bytes')
+    return pixels
+
+
+def verify_prepared_volume_rgba(master, actual, divisor_mode='per-pixel', *, fixed_divisor=False):
+    """Pure byte guard shared by producer tests and the actual pre-encoder boundary."""
+    import hashlib
+    import numpy as np
+    from . import ktx_conversion as core
+    expected, _ = core.encode_rgbd(master[..., :3], divisor_mode, fixed_divisor=fixed_divisor)
+    if actual is None or actual.dtype != np.uint8 or not np.array_equal(actual, expected):
+        raise ValueError('Volume prepared PNG differs from whole original float-master RGBD encoding')
+    return hashlib.sha256(actual.tobytes()).hexdigest()
+
+
+def _export_texture(source, source_sha256, filename, dimensions, work, package, ktx, threads, *, fixed_divisor=False, divisor_mode='per-pixel', advanced_alpha_policy=None):
     import subprocess
     from . import ktx_conversion as core
     from .ktx_export import prepare_blender, process_options
     if source.suffix.lower() != '.exr' or not source.is_file() or core.sha(source) != source_sha256:
         raise ValueError('Volume atlas missing or differs from capture receipt')
+    if advanced_alpha_policy not in (None, 'source-ceiling'):
+        raise ValueError('Unsupported Advanced alpha policy: ' + str(advanced_alpha_policy))
+    if advanced_alpha_policy is not None:
+        import os, struct
+        if not fixed_divisor: raise ValueError('Source-ceiling requires fixed-divisor Advanced')
+        if os.name != 'nt' or struct.calcsize('P') != 8:
+            raise ValueError('Source-ceiling requires verified Windows64 libktx')
+        if not (Path(ktx).resolve().parent / 'ktx.dll').is_file():
+            raise ValueError('Source-ceiling requires libktx beside the provided KTX executable')
     target = package / filename
     if target.exists(): raise ValueError('Volume texture collides with existing package asset')
     stage = work / filename.removesuffix('_rgbd.ktx2'); stage.mkdir()
     prepared, metrics = prepare_blender(dict(source_path=str(source), output=filename,
-        encoding='rgbd-v1', rgbd_fixed_divisor=fixed_divisor, size=0, flip_y=False, color_space='linear', codec='uastc', mipmaps=False, alpha='preserve'), stage)
+        encoding='rgbd-v1', rgbd_fixed_divisor=fixed_divisor, rgbd_divisor_mode=divisor_mode,
+        size=0, flip_y=False, color_space='linear', codec='uastc', mipmaps=False, alpha='preserve'), stage)
     if fixed_divisor: metrics['rgbd_divisor_mode'] = 'global-fixed'
+    elif divisor_mode == 'block-4x4': metrics['rgbd_divisor_mode'] = divisor_mode
     if metrics['dimensions'] != dimensions: raise ValueError('Volume atlas dimensions differ from contract')
+    # Prove the actual prepared PNG against encoding the unchanged whole float master BEFORE KTX create.
+    from .agx_lightmap import read_exr
+    actual_pixels = read_prepared_volume_rgba(prepared)
+    rgba_hash = verify_prepared_volume_rgba(read_exr(source), actual_pixels, divisor_mode, fixed_divisor=fixed_divisor)
+    metrics['source_preparation_guard'] = dict(when='before-ktx-create', byte_exact=True,
+        source_sha256=source_sha256, prepared_sha256=core.sha(prepared),
+        rgba_sha256=rgba_hash,
+        divisor_mode='global-fixed' if fixed_divisor else divisor_mode)
+    # Keep quality4's unconstrained original for diagnosis. The explicit policy
+    # caps endpoint alpha only; D and prepared numerator remain source-derived.
+    encoded = stage / (target.stem + '_unconstrained.ktx2') if advanced_alpha_policy else target
+    if encoded.exists(): raise ValueError('Unconstrained KTX path must be fresh')
+    if advanced_alpha_policy and (metrics['alpha_min'] != metrics['alpha_max'] or not 1 <= metrics['alpha_min'] <= 255):
+        raise ValueError('Advanced prepared alpha must be one original divisor byte')
+    if advanced_alpha_policy:
+        from .uastc_alpha import read_fixed_preparation
+        read_fixed_preparation(prepared, int(metrics['alpha_min']))
     command = [ktx, 'create', '--format', 'R8G8B8A8_UNORM', '--assign-oetf', 'linear',
-        '--encode', 'uastc', '--threads', str(threads), '--uastc-quality', '4', '--zstd', '3', str(prepared), str(target)]
-    for argv in (command, [ktx, 'validate', str(target)]):
+        '--encode', 'uastc', '--threads', str(threads), '--uastc-quality', '4', '--zstd', '3', str(prepared), str(encoded)]
+    for argv in (command, [ktx, 'validate', str(encoded)]):
         run = subprocess.run(argv, capture_output=True, text=True, **process_options())
         if run.returncode: raise RuntimeError('Volume KTX conversion failed: ' + run.stdout + run.stderr)
+    alpha_proof = None
+    if advanced_alpha_policy:
+        from .uastc_alpha import enforce_source_ceiling
+        alpha_proof = enforce_source_ceiling(encoded, target, prepared=prepared,
+            divisor=int(metrics['alpha_min']), ktx=ktx)
     if core.sha(source) != source_sha256: raise ValueError('Volume master changed during conversion')
     digest = core.sha(target)
-    return dict(status='passed', texture=filename, textureSha256=digest, bytes=target.stat().st_size,
+    result = dict(status='passed', texture=filename, textureSha256=digest, bytes=target.stat().st_size,
         source=str(source), metrics=metrics, command=command)
+    if alpha_proof is not None:
+        result['advancedAlphaPolicy'] = alpha_proof
+    return result
 
 
 def export_volume(context, model, work, package, options, ktx, threads=8, environment_options=None):
     """Old receipts export Simple only; newer receipts also export Advanced."""
     import bpy
     from . import ktx_conversion as core
+    alpha_policy = options.get('advanced_alpha_policy')
+    if alpha_policy not in (None, 'source-ceiling'):
+        raise ValueError('Unsupported Advanced alpha policy: ' + str(alpha_policy))
+    simple_mode = options.get('simple_divisor_mode', 'per-pixel')
+    if simple_mode not in ('per-pixel', 'block-4x4'):
+        raise ValueError('Unsupported Simple volume divisor mode: ' + str(simple_mode))
     if context.scene.world.preserveZUpRight:
         raise ValueError('Environment lighting volume requires Babylon Y-up export')
     metadata = marker_metadata(model)
     receipt = Path(bpy.path.abspath(options['config'])).resolve()
     record = validate_record(core.read_json(receipt))
+    if alpha_policy is not None and 'advanced' not in record:
+        raise ValueError('Advanced alpha policy requires an Advanced receipt')
     validate_source(context, record, environment_options, receipt)
     source = Path(bpy.path.abspath(options['image'])).resolve() if options.get('image') else (receipt.parent / record['master']).resolve()
-    report = _export_texture(source, record['masterSha256'], FILENAME, [128,128], work, package, ktx, threads)
+    simple_kwargs = {'divisor_mode': simple_mode} if simple_mode != 'per-pixel' else {}
+    report = _export_texture(source, record['masterSha256'], FILENAME, [128,128], work, package, ktx, threads, **simple_kwargs)
     report['receipt'] = str(receipt)
     descriptor = payload(record, report['textureSha256'], report['metrics']['alpha_min']/255, options.get('strength',1))
     if 'advanced' in record:
@@ -299,9 +383,11 @@ def export_volume(context, model, work, package, options, ktx, threads=8, enviro
         provenance = receipt.parent / advanced['provenance']
         if not provenance.is_file() or core.sha(provenance) != advanced['provenanceSha256']:
             raise ValueError('Advanced panorama provenance changed')
-        # Constant alpha prevents lossy UASTC divisor errors from amplifying gain.
+        # Prepared D stays original even when optional endpoint capping makes
+        # raw decoded alpha smaller: nativeRGBA8 decoding applies minDivisor D.
+        advanced_kwargs = {'advanced_alpha_policy': alpha_policy} if alpha_policy else {}
         result = _export_texture(receipt.parent / advanced['master'], advanced['masterSha256'],
-            ADVANCED_FILENAME, [128,768], work, package, ktx, threads, fixed_divisor=True)
+            ADVANCED_FILENAME, [128,768], work, package, ktx, threads, fixed_divisor=True, **advanced_kwargs)
         descriptor['advanced'] = advanced_payload(advanced, result['textureSha256'], result['metrics']['alpha_min']/255)
         report['advanced'] = result
     metadata[KEY] = descriptor

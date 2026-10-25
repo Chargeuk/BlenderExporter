@@ -1,5 +1,11 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.35 (25 October 2026)
+
+- Adds opt-in `separate-source-v1` volume export assembly. Preparation runs in a disposable scene context; a separate strict Stage B opens the untouched saved source and calls the guarded volume producer, allowing only the intended volume metadata delta. This preserves saved-source association and geometry checks while enabling volume production after prepared-scene export. The route requires the existing volume producer policies and helper versions declared by its recipe; a version label alone does not establish readiness.
+- Adds native volume audit tooling that compares the prepared RGBA8 volume with the complete linear master before KTX conversion, reports typed assembly stages separately, and keeps frozen voxel-first quality screens distinct from current encoded-filter-first shader math. Failed quality screens remain failures; no previous-scene exceptions are inherited.
+
+
 ## Blender exporter 3.3.34 (25 October 2026)
 
 - Adds opt-in saved-World and export-dialog defaults for KaDshow environment lighting. Exports containing `hasenv` may include `kadshowEnvironmentLightingDefaults` with version 1, mode `off`, `simple`, or `advanced`, and multiplier 0–10; omitted scripted settings inherit the World opt-in; an explicit unchecked dialog setting or `null` disables it. Existing export behavior remains the default.

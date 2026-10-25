@@ -6,6 +6,52 @@ import os
 from pathlib import Path
 
 
+# Optional nonappearance producer policies. Omission preserves every old property.
+VOLUME_EXPORT_POLICIES = {
+    'simple_divisor_mode': ('bjs_environment_lighting_volume_simple_divisor_mode', ('per-pixel', 'block-4x4')),
+    'advanced_alpha_policy': ('bjs_environment_lighting_volume_advanced_alpha_policy', ('source-ceiling',)),
+}
+
+
+def validate_volume_export_options(options):
+    """Validate BEFORE any relocation writes, including directory creation."""
+    if type(options) is not dict:
+        raise ValueError('volume_export_options must be an object')
+    if set(options) - set(VOLUME_EXPORT_POLICIES):
+        raise ValueError('Unsupported volume export option key')
+    for name, value in options.items():
+        if type(value) is not str or value not in VOLUME_EXPORT_POLICIES[name][1]:
+            raise ValueError('Unsupported volume export option value: ' + name)
+    return dict(options)
+
+
+def validate_saved_export_policies(worlds, proof):
+    """Policy state is not appearance; bind it explicitly in relocation proof."""
+    present = ('volumeExportOptions' in proof, 'volumeExportPolicyChanges' in proof)
+    if not any(present): return  # Old portable receipts remain valid unchanged.
+    if not all(present): raise ValueError('Incomplete saved volume export policy proof')
+    options = validate_volume_export_options(proof['volumeExportOptions'])
+    if options and not worlds: raise ValueError('Saved export policies require a World')
+    changes = proof['volumeExportPolicyChanges']
+    if type(changes) is not list: raise ValueError('Volume export changes must be a list')
+    expected = {(world.name, VOLUME_EXPORT_POLICIES[name][0]): value for world in worlds for name, value in options.items()}
+    actual = {}
+    for change in changes:
+        if type(change) is not dict or set(change) != {'world', 'key', 'previous', 'current'}:
+            raise ValueError('Unsupported saved volume export policy change')
+        if any(type(change[k]) is not str for k in ('world', 'key', 'current')) or (change['previous'] is not None and type(change['previous']) is not str):
+            raise ValueError('Invalid saved volume export policy change types')
+        pair = (change['world'], change['key'])
+        if pair in actual or pair not in expected or change['current'] != expected[pair]:
+            raise ValueError('Saved volume export policy change differs')
+        actual[pair] = change['current']
+    if actual != expected: raise ValueError('Saved volume export policy proof is incomplete')
+    for world in worlds:
+        for name, value in options.items():
+            if world.get(VOLUME_EXPORT_POLICIES[name][0]) != value:
+                raise ValueError('Saved volume export policy changed: ' + name)
+
+
 def scene_identity(context):
     """Preserve both editable physical state and the accepted baked preview."""
     import bpy
@@ -112,6 +158,9 @@ def validate_relocation(context, record, receipt_path):
         raise ValueError('Volume relocation source lineage changed')
     if scene_identity(context)!=proof.get('sceneIdentity'):
         raise ValueError('Relocated physical/preview scene state changed')
+    # Old proofs lack this optional state. New proofs must match actual saved IDs.
+    if 'volumeExportOptions' in proof or 'volumeExportPolicyChanges' in proof:
+        validate_saved_export_policies(bpy.data.worlds, proof)
 
 
 def relocate(config_path):
@@ -122,8 +171,22 @@ def relocate(config_path):
     from babylon_js.environment_lighting_volume import validate_record,validate_source
     if not bpy.app.background:raise ValueError('Relocation requires disposable background Blender')
     cfg=json.loads(Path(config_path).read_text(encoding='utf-8-sig'))
+    if type(cfg) is not dict: raise ValueError('Relocation config must be an object')
+    # Validate this optional block before all path rebasing/mkdir/copy/save.
+    export_options=validate_volume_export_options(cfg.get('volume_export_options', {}))
+    policy_changes=[]
+    if export_options and not bpy.data.worlds: raise ValueError('Volume export policies require a World')
+    for world in bpy.data.worlds:
+        for name,value in export_options.items():
+            key=VOLUME_EXPORT_POLICIES[name][0]
+            previous=world.get(key)
+            if previous is not None and not isinstance(previous,str):
+                raise ValueError('Previous volume export policy must be text: '+name)
+            policy_changes.append(dict(world=world.name,key=key,previous=previous,current=value))
     root=Path(cfg['package_root']).resolve();source_receipt=Path(cfg['source_receipt']).resolve()
     original=validate_record(json.loads(source_receipt.read_text(encoding='utf-8-sig')))
+    if 'advanced_alpha_policy' in export_options and 'advanced' not in original:
+        raise ValueError('Advanced export policy requires an Advanced receipt')
     if original.get('pathBase') or original.get('relocation'):raise ValueError('Relocate the original accepted capture receipt')
     if bpy.data.is_dirty or any(i.is_dirty for i in bpy.data.images):raise ValueError('Relocation requires a clean saved source')
     if Path(bpy.data.filepath).resolve()!=Path(original['source']['scene']).resolve():raise ValueError('Wrong original source loaded')
@@ -165,6 +228,9 @@ def relocate(config_path):
     for world in bpy.data.worlds:
         world['bjs_environment_lighting_volume_config']=relative(receipt)
         world['bjs_environment_lighting_volume_image']=relative(receipt.parent/original['master'])
+        world['bjs_environment_lighting_volume_strength']=world.get('bjs_environment_lighting_volume_strength',1)
+        for name,value in export_options.items():
+            world[VOLUME_EXPORT_POLICIES[name][0]]=value
     # Saving without automatic rebasing preserves the explicit candidate-local paths.
     bpy.ops.wm.save_as_mainfile(filepath=str(target),relative_remap=False,check_existing=True)
     if scene_identity(bpy.context)!=before:raise ValueError('Path-only save changed physical/preview scene state')
@@ -185,6 +251,9 @@ def relocate(config_path):
     proof=dict(version=1,method='validated dependency-path relocation and explicit administrative metadata updates; no appearance change, bake, capture or volume reprocessing',
         originalSourceSha256=source_sha,sourceSha256=sha(target),originalReceiptSha256=sha(source_receipt),sceneIdentity=before,
         administrativeChanges=changes)
+    if export_options:
+        proof['volumeExportOptions']=export_options
+        proof['volumeExportPolicyChanges']=policy_changes
     save_json(receipt.parent/'relocation_provenance.json',proof)
     record['relocation']=dict(version=1,originalReceipt='original_volume_receipt.json',originalReceiptSha256=sha(source_receipt),
         proof='relocation_provenance.json',proofSha256=sha(receipt.parent/'relocation_provenance.json'))
