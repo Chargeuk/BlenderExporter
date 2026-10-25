@@ -275,6 +275,8 @@ class BJS_PT_WorldPanel(bpy.types.Panel):
 
         from .environment_controls import draw_controls
         draw_controls(layout, world)
+        from .lighting_defaults import draw_world
+        draw_world(layout, world)
 
         box = layout.box()
         box.label(text='Sky Box / Environment Texture:')

@@ -469,6 +469,11 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
     try:
         from .environment_lighting_volume import saved_options
         options = dict(options)
+        from .lighting_defaults import resolve_options, apply_defaults
+        # Validate before staging/conversion, independently of volume descriptors and captures.
+        environment_defaults = resolve_options(context.scene.world, options)
+        if environment_defaults is not None:
+            options['environment_lighting_defaults'] = environment_defaults
         if 'environment_lighting_volume' not in options:
             associated_volume = saved_options(context.scene.world)
             if associated_volume:
@@ -569,6 +574,9 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
             # ENV conversion creates/retains hasenv before metadata is attached.
             volume_report = export_volume(context, delivered, work, package,
                 options['environment_lighting_volume'], tool, options.get('threads',8), options.get('environment'))
+            (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
+        if environment_defaults is not None:
+            apply_defaults(delivered, environment_defaults)
             (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
         for owner, key, _, _ in core.texture_fields(delivered):
             reference = owner[key]

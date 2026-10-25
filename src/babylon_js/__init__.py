@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Babylon.js',
     'author': 'David Catuhe, Jeff Palmer',
-    'version': (3, 3, 33),
+    'version': (3, 3, 34),
     'blender': (3, 3, 0),
     'location': 'File > Export > Babylon.js (.babylon)',
     'description': 'Export Babylon.js scenes (.babylon)',
@@ -44,6 +44,8 @@ if "bpy" in locals():
         importlib.reload(world)
     if 'environment_controls' in locals():
         importlib.reload(environment_controls)
+    if 'lighting_defaults' in locals():
+        importlib.reload(lighting_defaults)
 
 #===============================================================================
 def update_ktx_defaults(operator, context):
@@ -107,6 +109,18 @@ class JsonMain(bpy.types.Operator, ExportHelper):
     material_roughness_multiplier: bpy.props.FloatProperty(
         name='Roughness export multiplier', default=.8, min=0, max=1,
         description='Scale exported PBR roughness values only; 1 preserves source response, Blender materials remain unchanged')
+
+    environment_lighting_defaults_enabled: bpy.props.BoolProperty(
+        name='Export environment lighting defaults', default=False,
+        description='Override saved World defaults for this export; off omits the optional runtime profile')
+    environment_lighting_default_mode: bpy.props.EnumProperty(
+        name='Environment lighting default mode', default='advanced',
+        items=(('off', 'Off', 'Keep native environment lighting'),
+               ('simple', 'Simple', 'Prefer the simple volume'),
+               ('advanced', 'Advanced', 'Prefer the directional volume')))
+    environment_lighting_multiplier: bpy.props.FloatProperty(
+        name='Environment lighting multiplier', default=1, min=0, max=10,
+        description='Runtime environment-volume gain, applied to Simple and Advanced only')
 
     lighting_mode: bpy.props.EnumProperty(
         name='KaDshow lighting shader', default='shadow-aware',
@@ -244,6 +258,8 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         try:
             prefill(self, context)
             prefill_lighting_options(self, context)
+            from .lighting_defaults import prefill as prefill_environment_lighting_defaults
+            prefill_environment_lighting_defaults(self, context)
         except (ValueError, TypeError) as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
@@ -260,12 +276,18 @@ class JsonMain(bpy.types.Operator, ExportHelper):
         if self.colour_adjustment_enabled and not self.convert_to_ktx2:
             self.report({'ERROR'},'Colour adjustment requires KTX2 conversion')
             return {'CANCELLED'}
+        from .lighting_defaults import operator_options
+        try:
+            environment_defaults = operator_options(self, context)
+        except (ValueError, TypeError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
         exporter = JsonExporter()
         objects = bpy.context.selected_objects if self.export_selected else bpy.context.scene.objects
         options = None
         from .environment_lighting_volume import saved_options
         associated_volume = saved_options(context.scene.world)
-        if self.convert_to_ktx2 or self.export_skybox or self.export_environment or self.export_spatial_lighting or associated_volume:
+        if self.convert_to_ktx2 or self.export_skybox or self.export_environment or self.export_spatial_lighting or associated_volume or environment_defaults is not None:
             options = dict(executable=self.ktx_executable, flip_y=self.ktx_flip_y,
                            codec=self.ktx_codec, threads=self.ktx_threads,
                            lightmap=self.ktx_lightmap, lightmap_marker=self.ktx_lightmap_marker,
@@ -291,6 +313,8 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                     highlight_gain=self.environment_highlight_gain,highlight_threshold=self.environment_highlight_threshold)
             if associated_volume:
                 options['environment_lighting_volume'] = associated_volume
+            # Include explicit None so an unchecked dialog override can disable a saved World opt-in.
+            options['environment_lighting_defaults'] = environment_defaults
         exporter.execute(context, self.filepath, objects, ktx_options=options,
                          material_options=dict(metallic=self.material_metallic_multiplier,
                                                roughness=self.material_roughness_multiplier),
@@ -335,6 +359,8 @@ class JsonMain(bpy.types.Operator, ExportHelper):
                           'lighting_highlight_preservation'):
                 lighting.prop(self, field)
         lighting.label(text='Choose Original when re-exporting older, unchanged bakes')
+        from .lighting_defaults import draw_operator
+        draw_operator(self.layout, self)
         from .ktx_export import find_ktx
         box = self.layout.box()
         box.prop(self, 'ktx_executable')
@@ -420,6 +446,7 @@ from . import materials # directory
 from . import world # must be defined before mesh
 from . import mesh
 from . import environment_controls
+from . import lighting_defaults
 from .env_converter_setup import BJS_OT_env_converter_setup, cancel_setup
 from .lightmap_grading import BJS_OT_lightmap_grading
 from .colour_adjustment import BJS_OT_colour_adjustment, BJS_OT_tint_selected
@@ -442,6 +469,7 @@ classes = (
 
 def register():
     from bpy.utils import register_class
+    lighting_defaults.register_properties()
     for cls in classes:
         register_class(cls)
     bpy.types.TOPBAR_MT_file_export.append(menu_func)
@@ -453,6 +481,7 @@ def unregister():
         unregister_class(cls)
 
     bpy.types.TOPBAR_MT_file_export.remove(menu_func)
+    lighting_defaults.unregister_properties()
 
 # Registration the calling of the INFO_MT_file_export file selector
 def menu_func(self, context):

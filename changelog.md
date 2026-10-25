@@ -1,5 +1,11 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.34 (25 October 2026)
+
+- Adds opt-in saved-World and export-dialog defaults for KaDshow environment lighting. Exports containing `hasenv` may include `kadshowEnvironmentLightingDefaults` with version 1, mode `off`, `simple`, or `advanced`, and multiplier 0–10; omitted scripted settings inherit the World opt-in; an explicit unchecked dialog setting or `null` disables it. Existing export behavior remains the default.
+
+
+
 ## Blender exporter 3.3.33 (18 October 2026)
 
 - Adds explicit local setup and readiness checks for the optional Babylon ENV converter. Locked dependencies are installed only on request, and downloading Playwright Chromium requires a separate opt-in.
