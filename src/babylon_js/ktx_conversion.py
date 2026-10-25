@@ -9,9 +9,21 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
+
+
+def model_json(value, *, ensure_ascii=False, allow_nan=True):
+    """Serialize model data compactly without changing the caller's JSON policies."""
+    return json.dumps(value, ensure_ascii=ensure_ascii, allow_nan=allow_nan, separators=(',', ':'))
+
+
+def compact_model_json(text):
+    """Remove layout only, preserving strings and the manual exporter's numeric tokens."""
+    return re.sub(r'"(?:\\.|[^"\\])*"|[ \t\r\n]+',
+                  lambda match: match[0] if match[0].startswith('"') else '', text)
 
 
 def sha(path):
@@ -478,7 +490,7 @@ def run_conversion(plan, ktx, threads, prepare_image=None):
             # Record the pre-compression bound, so clients cannot amplify that error
             # beyond the source encoding's representable range.
             apply_rgbd_bounds(model['data'], report['textures'])
-            (staging / model['output']).write_text(json.dumps(model['data'], ensure_ascii=False, separators=(',', ':')), encoding='utf8')
+            (staging / model['output']).write_text(model_json(model['data']), encoding='utf8')
             if sha(Path(model['source'])) != model['source_sha256']:
                 raise RuntimeError('Source model changed during conversion')
         for spec in report['textures']:

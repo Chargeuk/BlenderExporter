@@ -74,6 +74,37 @@ class AssemblyBoundaryTests(unittest.TestCase):
                        lambda v:v['meshes'][0]['metadata'].update(kadshowEnvironmentLightingDefaults={'mode':'off'})):
             changed=copy.deepcopy(after);mutate(changed)
             with self.assertRaises(ValueError):assembly.metadata_only_delta(self.model,changed)
+    def test_assembled_model_is_compact_preserves_values_and_keeps_reports_readable(self):
+        self.model['geometry']={'positions':[-0.0,1.2345678901234567,1e-100],'indices':[0,1,2],'name':'Café  room'}
+        assembly.write(self.stage/'room.babylon',self.model)
+        report=assembly.read(self.stage/'room.ktx-report.json')
+        report['delivery_files'][0]['sha256']=assembly.sha(self.stage/'room.babylon')
+        assembly.write(self.stage/'room.ktx-report.json',report);self.seal()
+        api=types.ModuleType('babylon_js.environment_lighting_volume')
+        api.saved_options=Mock(return_value={'config':'fixture'})
+        descriptor={'strength':1,'advanced':{'strength':1}}
+        def attach(context,model,*args):
+            model['meshes'][0]['metadata'][assembly.VOLUME_KEY]=descriptor
+            return {'status':'fixture'}
+        api.export_volume=Mock(side_effect=attach)
+        package=types.ModuleType('babylon_js');package.__path__=[]
+        spec=importlib.util.spec_from_file_location('assembly_real_core',ADDON/'ktx_conversion.py')
+        core=importlib.util.module_from_spec(spec);spec.loader.exec_module(core)
+        package.ktx_conversion=core
+        bpy=types.SimpleNamespace(app=types.SimpleNamespace(background=True),data=types.SimpleNamespace(filepath=str(self.source),is_dirty=False,images=[]),
+            context=types.SimpleNamespace(scene=types.SimpleNamespace(world={'bjs_environment_image':str(self.hdr)})),path=types.SimpleNamespace(abspath=lambda p:p))
+        with patch.dict(sys.modules,{'bpy':bpy,'babylon_js':package,api.__name__:api}),patch.object(assembly,'package_closure',return_value={}):
+            result=assembly.assemble(self.config_path,self.stage,self.root/'stage-b')
+        model_path=Path(result['model']);raw=model_path.read_text(encoding='utf8');parsed=json.loads(raw)
+        self.assertEqual(raw,core.model_json(parsed,ensure_ascii=True,allow_nan=False))
+        self.assertEqual(parsed['geometry'],self.model['geometry'])
+        self.assertEqual(list(parsed),list(self.model))
+        self.assertEqual(assembly.metadata_only_delta(self.model,parsed),descriptor)
+        report_raw=(self.root/'stage-b/assembly-report.json').read_text(encoding='utf8')
+        self.assertIn('\n  "kind": ',report_raw)
+        self.assertEqual(json.loads(report_raw)['model_sha256'],assembly.sha(model_path))
+        assembly.verify_boundary(self.stage,self.config,self.config_path,assembly.sha(self.source))
+
     def test_volume_source_guard_failure_is_propagated_without_an_assembly_pass(self):
         api=types.ModuleType('babylon_js.environment_lighting_volume');api.saved_options=Mock(return_value={'config':'actual receipt checked by API'})
         api.export_volume=Mock(side_effect=ValueError('Relocated physical/preview scene state changed'))

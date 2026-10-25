@@ -371,7 +371,7 @@ def _make_config(raw_model, work, options, context=None, objects=()):
             if normalization:
                 # Mutate this same model; the later colour-layer write must retain it.
                 apply_normalization_metadata(model, marker, report['range_normalization'])
-                raw_model.write_text(json.dumps(model, ensure_ascii=False), encoding='utf8')
+                raw_model.write_text(core.model_json(model), encoding='utf8')
         output = core.lightmap_output_name(source.stem + ('_rgbd' if rgbd else '') + '.ktx2')
         specs.append(dict(source=str(source), output=output, lightmap_markers=[marker], encoding=encoding,
                           size=core.lightmap_size(options.get('lightmap_size', 0)),
@@ -397,7 +397,7 @@ def _make_config(raw_model, work, options, context=None, objects=()):
             for node in model.get(collection,[]):
                 if node.get('name')==marker:
                     node.setdefault('metadata',{})['kadshowColourAdjustment']=dict(version=1,texture=reference,coordinatesIndex=1,encoding=ca.ENCODING,strength=adjustment['strength'])
-        raw_model.write_text(json.dumps(model,ensure_ascii=False),encoding='utf8')
+        raw_model.write_text(core.model_json(model),encoding='utf8')
         specs.append(dict(source=str(work/'colour_adjustment.png'),output=output,references=[reference],flip_y=options.get('flip_y',True),color_space='srgb',codec=core.colour_codec(options),mipmaps=False,alpha='preserve'))
         bpy.data.images.remove(prepared)
     return dict(version=1, output_dir=str(work / 'converted'),
@@ -552,12 +552,12 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
             from .spatial_lighting import export_spatial
             spatial_report = export_spatial(context, delivered, objects, work, package,
                 options['spatial_lighting'], tool, options.get('threads',8))
-            (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
+            (package / target.name).write_text(core.model_json(delivered), encoding='utf8')
         skybox_report = None
         if 'skybox' in options:
             from .skybox_export import export_skybox
             skybox_report = export_skybox(context, delivered, work, package, options['skybox'])
-            (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
+            (package / target.name).write_text(core.model_json(delivered), encoding='utf8')
         environment_report = None
         if 'environment' in options:
             from .env_export import export_environment
@@ -567,17 +567,17 @@ def execute_with_ktx(exporter, context, filepath, objects, options, material_opt
             for key in list(delivered):
                 if key.startswith('environmentTexture'):
                     del delivered[key]
-            (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
+            (package / target.name).write_text(core.model_json(delivered), encoding='utf8')
         volume_report = None
         if options.get('environment_lighting_volume'):
             from .environment_lighting_volume import export_volume
             # ENV conversion creates/retains hasenv before metadata is attached.
             volume_report = export_volume(context, delivered, work, package,
                 options['environment_lighting_volume'], tool, options.get('threads',8), options.get('environment'))
-            (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
+            (package / target.name).write_text(core.model_json(delivered), encoding='utf8')
         if environment_defaults is not None:
             apply_defaults(delivered, environment_defaults)
-            (package / target.name).write_text(json.dumps(delivered, ensure_ascii=False), encoding='utf8')
+            (package / target.name).write_text(core.model_json(delivered), encoding='utf8')
         for owner, key, _, _ in core.texture_fields(delivered):
             reference = owner[key]
             if '://' in reference or reference.startswith('data:'):

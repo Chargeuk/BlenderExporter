@@ -1,5 +1,9 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.36 (25 October 2026)
+
+- Writes compact Babylon model JSON in direct export, KTX conversion and metadata rewrites, and separate-source volume assembly. Removes layout whitespace without changing geometry, lighting, numeric precision or JSON values; diagnostic reports and manifests retain their readable formatting.
+
 ## Blender exporter 3.3.35 (25 October 2026)
 
 - Adds opt-in `separate-source-v1` volume export assembly. Preparation runs in a disposable scene context; a separate strict Stage B opens the untouched saved source and calls the guarded volume producer, allowing only the intended volume metadata delta. This preserves saved-source association and geometry checks while enabling volume production after prepared-scene export. The route requires the existing volume producer policies and helper versions declared by its recipe; a version label alone does not establish readiness.

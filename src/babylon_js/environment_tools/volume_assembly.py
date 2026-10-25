@@ -137,7 +137,9 @@ def assemble(config_path,stage_a,output):
     volume_report=export_volume(bpy.context,model,work,package,options,config['tools']['ktx'],
         config['preparation']['operator_settings'].get('ktx_threads',8),conversion['environment_options'])
     metadata_only_delta(before,model)
-    write(package/config['model'],model)
+    from babylon_js import ktx_conversion as core
+    # Reports stay indented; only the delivered model uses compact JSON.
+    (package/config['model']).write_text(core.model_json(model,ensure_ascii=True,allow_nan=False),encoding='utf8')
     closure=package_closure(model,package)
     require(sha(source)==source_hash,'Stage B changed the saved source')
     require(verify_boundary(stage_a,config,config_path,source_hash)[0]==boundary,'Stage A boundary changed during assembly')

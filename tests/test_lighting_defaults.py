@@ -176,6 +176,7 @@ class StagedLightingDefaultsTests(unittest.TestCase):
         core.sha = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
         core.read_json = lambda path: json.loads(Path(path).read_text(encoding='utf8'))
         core.texture_fields = lambda model: []
+        core.model_json = load('lighting_defaults_real_core', ADDON / 'ktx_conversion.py').model_json
         volume = types.ModuleType(self.package_name + '.environment_lighting_volume')
         volume.saved_options = lambda world: None
         def export_volume(ctx, model, *args):

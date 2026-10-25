@@ -18,6 +18,7 @@ import time
 import calendar
 import math
 import json
+from .ktx_conversion import compact_model_json, model_json
 from .lighting_profile import lighting_profile, apply_lighting_profile
 
 from .node import Node
@@ -189,7 +190,7 @@ class JsonExporter:
                     model = json.load(exported)
                 if apply_lighting_profile(model, self.lighting_options):
                     with open(filepath, 'w', encoding='utf8') as exported:
-                        json.dump(model, exported, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+                        exported.write(model_json(model, allow_nan=False))
             else:
                 Logger.log('Output cancelled due to data error')
 
@@ -338,6 +339,13 @@ class JsonExporter:
         # Closing
         file_handler.write('\n}')
         file_handler.close()
+
+        # Keep the hand-written precision and numeric tokens; strip layout only.
+        model_path = self.filepathMinusExtension + '.babylon'
+        with open(model_path, 'r', encoding='utf8') as exported:
+            compact = compact_model_json(exported.read())
+        with open(model_path, 'w', encoding='utf8') as exported:
+            exported.write(compact)
 
         # Create or update .manifest file
         if self.settings.writeManifestFile:
