@@ -38,7 +38,51 @@ def check_preview_resolution(c):
     return result
 
 
+def _managed_relink_plan(c, root):
+    """Plan current-master bindings only for an explicitly managed preview."""
+    from babylon_js.lighting_controls import _managed_graphs
+    material=bpy.data.materials.get(c.get('preview_material',''))
+    graphs=_managed_graphs(material) if material is not None else []
+    if not graphs:return None
+    response=bool(c.get('receiver_response',{}).get('enabled'))
+    targets={name:Path(root)/'masters'/filename for name,filename in (
+        ('direct','direct_response_processed.exr' if response else 'direct_final.exr'),
+        ('indirect','indirect_response_processed.exr' if response else 'indirect_final.exr'),
+        ('island_ids','island_ids.exr'))}
+    # Geometry/bake/preflight can run before any lighting masters exist. An ID
+    # master alone also precedes a response derivation; never bind a partial set.
+    if not any(targets[name].is_file() for name in ('direct','indirect')):return None
+    missing=[name for name,path in targets.items() if not path.is_file()]
+    if missing:raise ValueError('Incomplete managed lighting masters: '+', '.join(missing))
+    validate_preview_resolution(material,(c['size'],c['size']))
+    rows=[(node,targets[node.get('bjs_preview_image_role')]) for tree in graphs for node in tree.nodes
+          if node.type=='TEX_IMAGE' and node.get('bjs_preview_image_role') in targets]
+    return material,rows
+
+
+def _bind_managed_lighting(c, plan):
+    """Retain interpretation/controls, without remapping unrelated image users."""
+    if plan is None:return
+    material,rows=plan;loaded={};bindings=[]
+    for node,target in rows:
+        old=node.image;key=(old.as_pointer(),str(target.resolve()))
+        if key not in loaded:
+            # The existing helper preserves image interpretation and properties.
+            # Work on a private image copy so legacy/custom graphs sharing the
+            # donor image are not redirected by this managed-role correction.
+            fresh=replace_from_disk(old.copy(),target)
+            if tuple(fresh.size)!=(c['size'],c['size']):
+                raise ValueError('Managed current-master dimensions differ: '+str(target))
+            if Path(bpy.path.abspath(fresh.filepath,library=fresh.library)).resolve()!=target.resolve():
+                raise ValueError('Managed current-master path differs: '+str(target))
+            loaded[key]=fresh
+        bindings.append((node,loaded[key]))
+    for node,image in bindings:node.image=image
+    validate_preview_resolution(material,(c['size'],c['size']))
+
+
 def relink(c, root):
+    managed_plan=_managed_relink_plan(c,root)
     replacements = {}
     for path in c.get('source_images',[]):
         replacements[(Path(c['_root'])/path).resolve()]=root/'source-assets'/path
@@ -54,6 +98,7 @@ def relink(c, root):
         if im.source == 'FILE' and im.filepath:
             target = replacements.get(Path(bpy.path.abspath(im.filepath)).resolve())
             if target and target.is_file(): replace_from_disk(im,target)
+    _bind_managed_lighting(c,managed_plan)
     if c.get('ao',{}).get('enabled') and (root/'masters/ao.exr').is_file():
         from babylon_js.lightmap_grading import upgrade
         image=bpy.data.images.load(str(root/'masters/ao.exr'),check_existing=True)

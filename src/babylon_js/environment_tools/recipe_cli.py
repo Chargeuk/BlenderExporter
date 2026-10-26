@@ -229,14 +229,42 @@ def resolve_input(root, config, relative):
     return package_path(root,relative)
 
 
+def candidate_output_records(root, outputs):
+    """Read portable/legacy manifest separators without rewriting recorded proof."""
+    root = Path(root).resolve()
+    require(isinstance(outputs, dict), 'Candidate stage outputs must be an object')
+    records, spellings = {}, {}
+    for relative, expected in outputs.items():
+        require(isinstance(relative, str) and relative and '\0' not in relative,
+                'Invalid candidate output path')
+        parts = relative.replace('\\', '/').split('/')
+        require(all(part and part not in ('.', '..') and ':' not in part for part in parts),
+                'Invalid candidate output path: ' + relative)
+        canonical = '/'.join(parts)
+        folded = canonical.casefold()
+        require(folded not in spellings or spellings[folded] == canonical,
+                'Case-ambiguous candidate output paths: ' + relative)
+        spellings[folded] = canonical
+        require(isinstance(expected, str) and bool(expected), 'Invalid candidate output digest')
+        require(canonical not in records or records[canonical][1] == expected,
+                'Conflicting candidate output aliases: ' + relative)
+        path = root.joinpath(*parts).resolve()
+        require(path.is_relative_to(root) and path.is_file(),
+                'Missing/escaping candidate output: ' + relative)
+        records[canonical] = (path, expected)
+    return records
+
+
 def check_candidate_geometry(manifest_path,source_hash,manifest=None):
     """Use the physical preparation receipt and this build's own geometry at its bake size."""
     manifest_path=Path(manifest_path);manifest=manifest if manifest is not None else read(manifest_path)
     sources=[Path(key) for key in manifest['inputs'] if key.endswith('.blend')]
     require(len(sources)==1,'Ambiguous candidate physical source')
     receipt=read(sources[0].parent/'REQUIRES_FULL_BAKE.json')
-    geometry_path=manifest_path.parent/'geometry/result.json'
-    require(sha(geometry_path)==manifest['stages']['geometry']['outputs']['geometry/result.json'],
+    outputs=candidate_output_records(manifest_path.parent,manifest['stages']['geometry']['outputs'])
+    require('geometry/result.json' in outputs, 'Missing candidate geometry output')
+    geometry_path,expected=outputs['geometry/result.json']
+    require(sha(geometry_path)==expected,
             'Fresh candidate geometry output changed')
     geometry=read(geometry_path)
     require(receipt['source_sha256']==source_hash and receipt['snapshot_sha256']==sha(sources[0]),
@@ -531,8 +559,8 @@ def bind_candidate(config_path,args):
     required={'geometry','bake','ownership','combine','capture'}
     require(required <= set(manifest.get('stages',{})),'Candidate requires completed geometry/bake/ownership/combine/capture')
     for name in required:
-        for rel,digest in manifest['stages'][name]['outputs'].items():
-            require(sha(build/rel)==digest,'Candidate build output changed: '+rel)
+        for rel,(path,digest) in candidate_output_records(build,manifest['stages'][name]['outputs']).items():
+            require(sha(path)==digest,'Candidate build output changed: '+rel)
     provenance=read(build/'masters/combined.provenance.json')
     require(provenance['combined_sha256']==sha(build/'masters/combined.exr'),'Combined candidate provenance differs')
     require(sha(package_path(root,config['source']))==config['source_sha256'],'Retained source changed')

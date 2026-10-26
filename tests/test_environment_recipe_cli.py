@@ -122,6 +122,85 @@ class CandidateBindingTests(unittest.TestCase):
                 recipe.bind_candidate(config,SimpleNamespace(build_candidate=build,out=root/'candidate.json'))
             self.assertFalse((root/'candidate.json').exists())
 
+
+    def windows_manifest(self, build):
+        manifest=recipe.read(build/'build.json')
+        for stage in manifest['stages'].values():
+            stage['outputs']={name.replace('/',chr(92)):value for name,value in stage['outputs'].items()}
+        recipe.write(build/'build.json',manifest)
+        return manifest
+
+    def test_windows_separator_candidate_binds_without_rewriting_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);config,build,_=self.make_candidate(root,1024)
+            self.windows_manifest(build);before=(build/'build.json').read_bytes()
+            out=root/'bound.json';recipe.bind_candidate(config,SimpleNamespace(build_candidate=build,out=out))
+            self.assertTrue(out.is_file())
+            self.assertEqual((build/'build.json').read_bytes(),before)
+            self.assertEqual(recipe.check_candidate_geometry(build/'build.json',recipe.read(config)['source_sha256'])[1]['geometry_sha256'],'matched-geometry')
+
+    def test_equal_separator_aliases_are_one_unambiguous_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);config,build,_=self.make_candidate(root,512)
+            manifest=recipe.read(build/'build.json');outputs=manifest['stages']['geometry']['outputs']
+            outputs['geometry'+chr(92)+'result.json']=outputs['geometry/result.json'];recipe.write(build/'build.json',manifest)
+            recipe.bind_candidate(config,SimpleNamespace(build_candidate=build,out=root/'bound.json'))
+
+    def test_conflicting_separator_aliases_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);config,build,_=self.make_candidate(root,512)
+            manifest=recipe.read(build/'build.json');manifest['stages']['geometry']['outputs']['geometry'+chr(92)+'result.json']='different-digest';recipe.write(build/'build.json',manifest)
+            with self.assertRaisesRegex(ValueError,'Conflicting candidate output aliases'):
+                recipe.bind_candidate(config,SimpleNamespace(build_candidate=build,out=root/'bound.json'))
+            self.assertFalse((root/'bound.json').exists())
+
+    def test_case_ambiguous_manifest_paths_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);config,build,_=self.make_candidate(root,512)
+            manifest=recipe.read(build/'build.json');outputs=manifest['stages']['geometry']['outputs']
+            outputs['GEOMETRY/result.json']=outputs['geometry/result.json'];recipe.write(build/'build.json',manifest)
+            with self.assertRaisesRegex(ValueError,'Case-ambiguous candidate output paths'):
+                recipe.bind_candidate(config,SimpleNamespace(build_candidate=build,out=root/'bound.json'))
+
+    def test_manifest_paths_cannot_escape_or_use_ambiguous_components(self):
+        invalid=['../result.json','/geometry/result.json',r'\geometry\result.json',r'C:\geometry\result.json',
+                 r'C:geometry\result.json',r'\\server\share\result.json','geometry/../result.json',
+                 'geometry/./result.json','geometry//result.json','geometry/result.json:stream','geometry/'+chr(0)+'result.json']
+        for relative in invalid:
+            with self.subTest(path=relative),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);config,build,_=self.make_candidate(root,512)
+                manifest=recipe.read(build/'build.json');manifest['stages']['geometry']['outputs'][relative]='digest';recipe.write(build/'build.json',manifest)
+                with self.assertRaisesRegex(ValueError,'candidate output path'):
+                    recipe.bind_candidate(config,SimpleNamespace(build_candidate=build,out=root/'bound.json'))
+
+    def test_manifest_symlink_target_cannot_escape_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);config,build,_=self.make_candidate(root,512)
+            outside=root/'outside.json';outside.write_bytes(b'outside-build')
+            link=build/'geometry/link.json'
+            try:link.symlink_to(outside)
+            except (OSError,NotImplementedError):self.skipTest('Symlink creation unavailable')
+            manifest=recipe.read(build/'build.json');manifest['stages']['geometry']['outputs']['geometry/link.json']=recipe.sha(outside);recipe.write(build/'build.json',manifest)
+            with self.assertRaisesRegex(ValueError,'Missing/escaping candidate output'):
+                recipe.bind_candidate(config,SimpleNamespace(build_candidate=build,out=root/'bound.json'))
+
+    def test_windows_manifest_output_hashes_still_guard_exact_bytes(self):
+        for relative in ('geometry/result.json','capture/capture.exr'):
+            with self.subTest(path=relative),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);config,build,_=self.make_candidate(root,512);self.windows_manifest(build)
+                (build/relative).write_bytes(b'changed-after-manifest')
+                with self.assertRaisesRegex(ValueError,'Candidate build output changed'):
+                    recipe.bind_candidate(config,SimpleNamespace(build_candidate=build,out=root/'bound.json'))
+
+    def test_windows_geometry_direct_check_keeps_hash_and_snapshot_guards(self):
+        for changed in ('geometry','snapshot'):
+            with self.subTest(changed=changed),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);config,build,physical=self.make_candidate(root,512);self.windows_manifest(build)
+                path=build/'geometry/result.json' if changed=='geometry' else physical/'physical.blend'
+                path.write_bytes(b'changed-after-manifest')
+                with self.assertRaisesRegex(ValueError,'geometry output changed' if changed=='geometry' else 'not prepared from retained source'):
+                    recipe.check_candidate_geometry(build/'build.json',recipe.read(config)['source_sha256'])
+
 class SourceGeometryAssociationTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)

@@ -1,5 +1,13 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.37 (26 October 2026)
+
+- Packages source-bound opaque-gray solid/culling diagnostics with explicit evaluated delivery membership, camera and face-omission guards, and a working direct-file Blender CLI bootstrap. These disposable views never save the source or claim PBR/runtime acceptance.
+- Packages the offline Babylon structural inspector and native merge-emulation CLI with geometry, hierarchy, membership and blocked-I/O checks; its reports distinguish structural prediction from application execution.
+- Adds dependency-free UV chart-spacing and signed tile-border measurements with finite-input validation, witnessed minimum distances and no implicit gap pass threshold.
+- Preserves portable candidate-manifest paths and validates legacy separator aliases; binds managed preview samplers to complete current lighting masters without remapping unrelated image users; supports Simple-only volume capture without computing or writing Advanced data.
+- Retains compact model JSON, existing lighting-default schemas and default capture behavior, with expanded helper, Blender fixture and package coverage.
+
 ## Blender exporter 3.3.36 (25 October 2026)
 
 - Writes compact Babylon model JSON in direct export, KTX conversion and metadata rewrites, and separate-source volume assembly. Removes layout whitespace without changing geometry, lighting, numeric precision or JSON values; diagnostic reports and manifests retain their readable formatting.

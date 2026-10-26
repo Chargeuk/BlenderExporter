@@ -1,6 +1,6 @@
 # Blender to Babylon.js exporter
 
-## Chargeuk fork: version 3.3.36
+## Chargeuk fork: version 3.3.37
 
 This fork maintains the Babylon.js Blender exporter and packages workflows for Blender 5.2. The add-on retains the scene and material exporter and adds optional texture delivery and environment-lighting tools.
 
@@ -11,7 +11,9 @@ Current fork features include:
 - Split direct/indirect lightmap preview and AO grading, physical colour adjustment, and AgX-compensated lightmap preparation.
 - Saved-scene environment helpers for preparation, baking and ownership checks, receiver response, camera capture, spatial lighting, and simple or advanced environment-lighting volumes.
 - Reusable Python workflow tools included in the installable add-on package.
-- Opt-in `separate-source-v1` export assembly prepares delivery assets in a disposable scene, then validates and adds the lighting volume from the untouched saved source.\n- Opt-in `separate-source-v1` export assembly prepares delivery assets in a disposable scene, then validates and adds the lighting volume from the untouched saved source.
+- Source-bound solid/culling diagnostics with explicit evaluated delivery membership and recorded face omissions, plus UV chart-spacing and signed-border measurements.
+- Offline Babylon geometry inspection and native merge emulation with explicit structural limits; these reports do not replace application or rendered acceptance.
+- Opt-in `separate-source-v1` export assembly prepares delivery assets in a disposable scene, then validates and adds the lighting volume from the untouched saved source.
 - Optional per-World and per-export-dialog environment-lighting defaults, serialized as a versioned KaDshow profile only for exports containing `hasenv`.
 
 These options are purpose-built for prepared environments. Their presence does not make arbitrary KaDshow scenes or client runtime packages automatically compatible; see [the KaDshow integration contract and boundaries](docs/KADSHOW_EXPORT_GAPS.md).

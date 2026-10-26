@@ -276,6 +276,9 @@ def run(config_path, phase, skip_trial=False):
     config_path = Path(config_path).resolve()
     config = json.loads(config_path.read_text(encoding='utf-8-sig')); base = config_path.parent
     if config.get('schema_version') != 1: raise ValueError('Expected volume capture schema_version 1')
+    include_advanced = config.get('include_advanced', True)
+    if type(include_advanced) is not bool:
+        raise ValueError('include_advanced must be a boolean')
     resolve = lambda key: (base / config[key]).resolve()
     source = resolve('source_scene'); scope = resolve('scope_recipe')
     if Path(bpy.data.filepath).resolve() != source or sha(source) != config['source_sha256']:
@@ -304,7 +307,7 @@ def run(config_path, phase, skip_trial=False):
     if not math.isfinite(minimum) or minimum <= 0: raise ValueError('Positive probe clearance required')
     reference_pixels = read_exr(reference)
     reference_rgb = panorama_mean(reference_pixels)
-    reference_hemispheres = hemisphere_means(reference_pixels)
+    reference_hemispheres = hemisphere_means(reference_pixels) if include_advanced else None
     relative_rgb(np.ones((2,4,3), np.float32), reference_rgb)
     world = environment_controls.settings(environment_controls.find_controls(scene.world))
     identity = geometry_identity(recipe)
@@ -382,7 +385,9 @@ def run(config_path, phase, skip_trial=False):
         print('VOLUME_TRIAL_READY '+str(output/'trial.json'),flush=True)
         return
     grid=np.ones((nz,ny,nx,4),np.float32); grid[...,:3]=np.nan
-    advanced_grid=np.ones((6,nz,ny,nx,4),np.float32); advanced_grid[...,:3]=np.nan
+    advanced_grid=None
+    if include_advanced:
+        advanced_grid=np.ones((6,nz,ny,nx,4),np.float32); advanced_grid[...,:3]=np.nan
     pilot={tuple(p['index']):output/p['directory'] for p in trial['probes']}
     completed=0; probes=output/'probes';probes.mkdir(exist_ok=True)
     total=int(valid.sum()); checkpoints=[]
@@ -391,7 +396,8 @@ def run(config_path, phase, skip_trial=False):
         directory=pilot.get((x,y,z),probes/('%02d_%02d_%02d'%(x,y,z)))
         ratio,pixels,result=render(positions[z,y,x],directory)
         grid[z,y,x,:3]=ratio
-        advanced_grid[:,z,y,x,:3]=relative_hemispheres(pixels,reference_hemispheres)
+        if include_advanced:
+            advanced_grid[:,z,y,x,:3]=relative_hemispheres(pixels,reference_hemispheres)
         checkpoints.append(dict(directory=str(directory.relative_to(output)),probeSha256=sha(directory/'probe.json'),panoramaSha256=result['panoramaSha256']))
         completed+=1
         if completed == 1 and skip_trial:
@@ -428,9 +434,12 @@ def run(config_path, phase, skip_trial=False):
         previews=dict(slices='volume_slices.png',panorama='capture_00_panorama.png' if skip_trial else 'trial_00_panorama.png',display='Fixed Reinhard then sRGB; neutral ratio 1 maps to approximately 0.735 sRGB; no local minmax'))
     if skip_trial:
         record['capture']['trial'] = dict(status='skipped', explicitUserOverride=True, reason=trial['reason'], receipt='trial.json', receiptSha256=sha(output/'trial.json'))
-    record['advanced']=write_advanced(advanced_grid,positions,valid,reference_hemispheres,bounds,output,
-        dict(method='same captured panoramas as Simple; no additional probe renders',source=inputs,
-            acceptedCaptureInputsSha256=sha(output/'capture_inputs.json'),validMaskSha256=sha(output/'coarse_valid_mask.npy'),checkpoints=checkpoints))
+    # Keep the untouched Simple receipt usable by derive(); default capture still
+    # writes both products from these same panoramas without extra renders.
+    if include_advanced:
+        record['advanced']=write_advanced(advanced_grid,positions,valid,reference_hemispheres,bounds,output,
+            dict(method='same captured panoramas as Simple; no additional probe renders',source=inputs,
+                acceptedCaptureInputsSha256=sha(output/'capture_inputs.json'),validMaskSha256=sha(output/'coarse_valid_mask.npy'),checkpoints=checkpoints))
     for key in ('scene','scopeRecipe','combined','combinedProvenance','reference'):
         if sha(inputs[key])!=inputs[key+'Sha256']: raise ValueError('Input changed during capture: '+key)
     save_json(output/'volume_receipt.json',record)

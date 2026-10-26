@@ -342,7 +342,7 @@ def main():
             for f,digest in inputs.items():
                 if f in ('reuse_lightmaps','recombine','rebake_ao','env_converter'):continue
                 if sha(f)!=digest:raise ValueError('Source/tool changed during build: '+f)
-        outputs={str(f.relative_to(root)):sha(f) for f in stage.rglob('*') if f.is_file()}
+        outputs={f.relative_to(root).as_posix():sha(f) for f in stage.rglob('*') if f.is_file()}
         if name=='bake':
             for f in ('albedo_uv.exr','albedo_uv.exr.json'): outputs['masters/'+f]=sha(root/'masters'/f)
         if name=='process':

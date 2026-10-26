@@ -12,7 +12,7 @@ def _number(value, name, low=None, high=None):
         raise ValueError('camera_set ' + name + ' outside allowed range')
 
 
-def validate_camera_set(c):
+def validate_camera_set(c, *, diagnostic=False):
     """No Blender import; legacy capture recipes without camera_set remain unchanged."""
     capture = c.get('capture', {})
     if 'views' not in capture:
@@ -53,7 +53,9 @@ def validate_camera_set(c):
     delivery=spec.get('delivery_contract')
     if delivery is not None and (not isinstance(delivery,str) or not delivery.strip()):
         raise ValueError('delivery_contract must name a saved decoded-delivery contract')
-    modes=('delivery-reference','delivery-decoded') if delivery else ('physical','baked')
+    if diagnostic and delivery:
+        raise ValueError('Solid diagnostics do not use a decoded-delivery contract')
+    modes=('solid',) if diagnostic else (('delivery-reference','delivery-decoded') if delivery else ('physical','baked'))
     allowed = {'id', 'camera', 'matrix_world', 'lens', 'mode', 'camera_properties'}
     camera_properties = {'type', 'sensor_width', 'sensor_fit', 'shift_x', 'shift_y', 'clip_start', 'clip_end', 'ortho_scale', 'dof_use', 'dof_fstop'}
     for entry in entries:
