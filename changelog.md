@@ -1,5 +1,27 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.47 (26 October 2026)
+
+- Combines the preserved local 3.3.46 workflows with the published 3.3.37 feature line, retaining native physical-diffuse and appearance diagnostics, ordered material restoration, deferred volume attachment, decoded-volume validation and intrinsic palette processing.
+- Retains remote solid/culling and UV-spacing diagnostics, compact Babylon output, lighting defaults, source-bound volume assembly and current Simple/Advanced producer policies.
+- Preserves both glass RGB retention and explicit alpha overrides, both decoded-volume CLI routes, and the existing separate receipt contracts for alternate volume export workflows. Package metadata and the add-on version are aligned at 3.3.47.
+
+## Blender exporter 3.3.44 (22 October 2026)
+
+- Adds opt-in512RGBA appearance-only colour finishing over immutable native transport, with a separate copied-map/combined proof and a single-derivative export gate. Physical source/ownership hashes remain original; legacy reuse/export guards and encoding algorithms are unchanged.
+
+## Blender exporter 3.3.43 (22 October 2026)
+
+- Adds an explicit unaccepted pre-HDR native diagnostic mode to the existing export preparation entry point. It verifies original native provenance and real exporter registration, preserves ordered physical slots, and rejects environment/capture fallback. Legacy export guards and encoding algorithms are unchanged.
+
+## Blender exporter 3.3.41 (22 October 2026)
+
+- Adds opt-in measured UV inter-chart and tile-border clearance to the existing read-only UV auditor, with closest-point witnesses, explicit numerical tolerance, and an AABB search/candidate cap. Existing audit defaults are unchanged.
+
+## Blender exporter 3.3.36 (19 October 2026)
+
+- Adds offline paired Simple/Advanced decoded-volume delivery validation with native OpenImageIO EXR/PNG reading. It binds the converted model, capture masters, receipts, source dependencies and KTX2 outputs; checks base-level RGBA8 decoding, RGBD comparisons and Advanced directional banks. This does not perform Blender recapture or KaDshow runtime acceptance.
+
 ## Blender exporter 3.3.37 (26 October 2026)
 
 - Packages source-bound opaque-gray solid/culling diagnostics with explicit evaluated delivery membership, camera and face-omission guards, and a working direct-file Blender CLI bootstrap. These disposable views never save the source or claim PBR/runtime acceptance.
@@ -23,6 +45,14 @@
 - Adds opt-in saved-World and export-dialog defaults for KaDshow environment lighting. Exports containing `hasenv` may include `kadshowEnvironmentLightingDefaults` with version 1, mode `off`, `simple`, or `advanced`, and multiplier 0–10; omitted scripted settings inherit the World opt-in; an explicit unchecked dialog setting or `null` disables it. Existing export behavior remains the default.
 
 
+
+## Blender exporter 3.3.35 (19 October 2026)
+
+- Adds an opt-in native uncapped physical-diffuse camera reference path. It retains linear float32 EXR and native diffuse passes, derives RGB display PNGs without a second render, and records exact saved-source and restoration receipts. This is a diagnostic reference, not a capped-bake equivalence or runtime lightmap.
+
+## Blender exporter 3.3.34 (19 October 2026)
+
+- Adds opt-in native Workbench geometry diagnostics with exact saved-source selection, explicit camera/shading/culling jobs, per-view visibility and camera receipts, and the existing receiver-normal guard. Physical and baked capture APIs are unchanged.
 
 ## Blender exporter 3.3.33 (18 October 2026)
 

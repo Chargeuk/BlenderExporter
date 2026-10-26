@@ -1,6 +1,6 @@
 # Blender to Babylon.js exporter
 
-## Chargeuk fork: version 3.3.37
+## Chargeuk fork: version 3.3.47
 
 This fork maintains the Babylon.js Blender exporter and packages workflows for Blender 5.2. The add-on retains the scene and material exporter and adds optional texture delivery and environment-lighting tools.
 
@@ -9,8 +9,8 @@ Current fork features include:
 - KTX2 conversion for material textures and lightmaps, with `rgbd-v1` lightmap encoding, per-map codec settings, divisor modes, and optional region-specific encoding.
 - Optional Basis skybox and Babylon ENV conversion for prepared panoramas.
 - Split direct/indirect lightmap preview and AO grading, physical colour adjustment, and AgX-compensated lightmap preparation.
-- Saved-scene environment helpers for preparation, baking and ownership checks, receiver response, camera capture, spatial lighting, and simple or advanced environment-lighting volumes.
-- Reusable Python workflow tools included in the installable add-on package.
+- Saved-scene environment helpers for preparation, baking and ownership checks, receiver response, camera capture (including uncapped native physical-diffuse references), spatial lighting, and simple or advanced environment-lighting volumes.
+- Reusable Python workflow tools included in the installable add-on package, including offline paired Simple/Advanced RGBD volume delivery validation with a native OpenImageIO reader.
 - Source-bound solid/culling diagnostics with explicit evaluated delivery membership and recorded face omissions, plus UV chart-spacing and signed-border measurements.
 - Offline Babylon geometry inspection and native merge emulation with explicit structural limits; these reports do not replace application or rendered acceptance.
 - Opt-in `separate-source-v1` export assembly prepares delivery assets in a disposable scene, then validates and adds the lighting volume from the untouched saved source.

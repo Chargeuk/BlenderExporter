@@ -150,4 +150,117 @@ assert module.triangle_intersection_area([[0,0],[1,0],[0,1]], [[0,0],[0,1],[1,0]
         with self.assertRaisesRegex(ValueError, 'finite'): check([row([[0, 0], [np.nan, 0], [0, 1]])])
 
 
+class UVClearanceTests(unittest.TestCase):
+    @staticmethod
+    def square(x, y, size, chart, start=0, obj='A'):
+        return [row([[x, y], [x+size, y], [x+size, y+size]], start, obj, chart),
+                row([[x, y], [x+size, y+size], [x, y+size]], start+1, obj, chart)]
+
+    def measure(self, rows, **settings):
+        return check(rows, measure_clearance=True, **settings)['clearance']
+
+    def test_opt_in_preserves_default_report(self):
+        self.assertNotIn('clearance', check(self.square(.1, .1, .2, 1)))
+
+    def test_analytical_gap_border_and_witness(self):
+        rows = self.square(.1, .1, .2, 1)+self.square(.4, .1, .2, 2, 2)
+        result = self.measure(rows)
+        self.assertTrue(result['complete'])
+        self.assertAlmostEqual(result['minimum_inter_chart_clearance_pixels'], .1*2048)
+        self.assertAlmostEqual(result['minimum_tile_border_distance_pixels'], .1*2048)
+        self.assertAlmostEqual(result['signed_tile_inset_pixels'], .1*2048)
+        witness = result['inter_chart_witness']
+        self.assertNotEqual(witness['first']['chart'], witness['second']['chart'])
+        self.assertAlmostEqual(np.linalg.norm(np.subtract(witness['first']['point_uv'], witness['second']['point_uv']))*2048, .1*2048)
+        for item in witness.values():
+            source = next(r for r in rows if r['triangle'] == item['triangle'])
+            edge = item['segment']
+            self.assertIsNotNone(edge)
+            a, b = np.array(source['uv'][edge]), np.array(source['uv'][(edge+1) % 3])
+            p = np.array(item['point_uv'])
+            self.assertAlmostEqual(float(np.cross(b-a, p-a)), 0.)
+            self.assertLessEqual(float(np.dot(p-a, p-b)), 1e-15)
+
+    def test_rotation_reversed_winding_and_slivers(self):
+        base = self.square(.1, .1, .1, 1)+self.square(.23, .1, .1, 2, 2)
+        angle = .43
+        rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+        for item in base:
+            item['uv'] = ((np.asarray(item['uv'])-.2)@rotation+.5).tolist()[::-1]
+        self.assertAlmostEqual(self.measure(base)['minimum_inter_chart_clearance_pixels'], .03*2048)
+        slivers = [row([[.1, .1], [.4, .1], [.2, .100000001]], chart=1),
+                   row([[.1, .2], [.4, .2], [.2, .200000001]], 1, chart=2)]
+        self.assertAlmostEqual(self.measure(slivers)['minimum_inter_chart_clearance_pixels'], (.1-1e-9)*2048)
+
+    def test_concave_union_and_internal_diagonal_do_not_invent_gap(self):
+        # L-shaped chart: the second chart occupies its empty upper-right notch.
+        outer = self.square(.1, .1, .2, 1)
+        outer += [row([[.1, .3], [.2, .3], [.2, .5]], 2, chart=1),
+                  row([[.1, .3], [.2, .5], [.1, .5]], 3, chart=1)]
+        notch = self.square(.3, .4, .1, 2, 4)
+        self.assertAlmostEqual(self.measure(outer+notch)['minimum_inter_chart_clearance_pixels'], .1*2048)
+        # Each square's internal triangulation diagonal is ignored as a pair.
+        same = self.square(.1, .1, .2, 1)
+        self.assertIsNone(self.measure(same)['minimum_inter_chart_clearance_pixels'])
+
+    def test_touch_crossing_containment_and_tiny_overlap_are_zero(self):
+        first = row([[.1, .1], [.7, .1], [.1, .7]])
+        cases = [row([[.2, .2], [.21, .2], [.2, .21]], 1, chart=2),
+                 row([[.7, .1], [.8, .1], [.7, .2]], 1, chart=2),
+                 row([[.4, .05], [.45, .4], [.5, .05]], 1, chart=2),
+                 row([[.7-1e-7, .1], [.8, .1], [.7-1e-7, .2]], 1, chart=2)]
+        for other in cases:
+            for winding in (other['uv'], other['uv'][::-1]):
+                result = self.measure([first, dict(other, uv=winding)])
+                self.assertEqual(result['minimum_inter_chart_clearance_pixels'], 0.)
+        # Even an overlap ignored by the original area threshold cannot be a gap.
+        tiny = check([first, cases[-1]], measure_clearance=True)
+        self.assertEqual(tiny['totals']['positive_overlap_pairs'], 0)
+        self.assertEqual(tiny['clearance']['minimum_inter_chart_clearance_pixels'], 0.)
+
+    def test_distinct_objects_are_distinct_charts_and_degeneracy_is_retained(self):
+        rows = [row([[.1, .1], [.2, .1], [.1, .2]], obj='A'),
+                row([[.3, .1], [.3, .1], [.3, .1]], obj='B')]
+        report = check(rows, measure_clearance=True)
+        self.assertEqual(report['totals']['degenerate_triangles'], 1)
+        self.assertAlmostEqual(report['clearance']['minimum_inter_chart_clearance_pixels'], .1*2048)
+
+    def test_border_crossing_and_wholly_outside_are_distinguished(self):
+        crossing = self.measure([row([[-.1, .2], [.1, .2], [.1, .3]])])
+        self.assertEqual(crossing['minimum_tile_border_distance_pixels'], 0.)
+        self.assertAlmostEqual(crossing['signed_tile_inset_pixels'], -.1*2048)
+        outside = self.measure([row([[1.1, .2], [1.2, .2], [1.1, .3]])])
+        self.assertAlmostEqual(outside['minimum_tile_border_distance_pixels'], .1*2048)
+        self.assertAlmostEqual(outside['signed_tile_inset_pixels'], -.2*2048)
+
+    def test_tolerance_and_candidate_cap_have_explicit_semantics(self):
+        rows = self.square(.1, .1, .1, 1)+self.square(.20001, .1, .1, 2, 2)
+        self.assertGreater(self.measure(rows)['minimum_inter_chart_clearance_pixels'], 0)
+        self.assertEqual(self.measure(rows, clearance_tolerance_pixels=.1)['minimum_inter_chart_clearance_pixels'], 0.)
+        rows = [row([[x, .1], [x+.01, .1], [x, .11]], i, chart=i)
+                for i, x in enumerate((.1, .8, .4))]
+        report = check(rows, measure_clearance=True, max_clearance_candidate_pairs=1)
+        result = report['clearance']
+        self.assertFalse(result['complete'])
+        self.assertEqual(report['status'], 'incomplete')
+        self.assertIsNone(result['minimum_inter_chart_clearance_pixels'])
+        self.assertIsNotNone(result['observed_inter_chart_upper_bound_pixels'])
+        self.assertEqual(result['counts']['tested_triangle_pairs'], 1)
+
+    def test_empty_nonfinite_and_bad_clearance_settings_are_rejected(self):
+        for rows in ([], [row([[0, 0], [1, 0], [0, np.inf]])]):
+            with self.assertRaises(ValueError): self.measure(rows)
+        for tolerance in (-1., float('nan'), float('inf')):
+            with self.assertRaises(ValueError): self.measure(self.square(.1, .1, .2, 1), clearance_tolerance_pixels=tolerance)
+        with self.assertRaises(ValueError): self.measure(self.square(.1, .1, .2, 1), max_clearance_candidate_pairs=0)
+
+    def test_aabb_broadphase_does_not_allocate_or_visit_all_pairs(self):
+        rows = [row([[x/30+.001, y/30+.001], [x/30+.01, y/30+.001], [x/30+.001, y/30+.01]],
+                    y*30+x, chart=y*30+x) for y in range(30) for x in range(30)]
+        result = self.measure(rows)
+        self.assertTrue(result['complete'])
+        self.assertAlmostEqual(result['minimum_inter_chart_clearance_pixels'], (1/30-.009)*2048)
+        self.assertLess(result['counts']['tested_triangle_pairs'], len(rows)*20)
+
+
 if __name__ == '__main__': unittest.main()

@@ -2,7 +2,8 @@
 
 This standalone tool verifies a completed immutable native candidate. It never
 updates normal camera/bake APIs, rewrites combined provenance, saves the source,
-rebakes or resynthesizes response/dilation. External Python validates provenance;
+rebakes or resynthesizes response. Native transport opt-in derives only ordinary
+ownership padding in a separate diagnostic directory. External Python validates provenance;
 disposable factory-startup Blender renders actual linear channels and PNGs.
 """
 from contextlib import contextmanager
@@ -32,34 +33,81 @@ def save(path,value):Path(path).write_text(json.dumps(value,indent=2,allow_nan=F
 DEFAULT_VARIANTS=('raw','processed','physical-diffuse')
 
 
+def diagnostic_mode(recipe):
+    mode=recipe.get('mode','response')
+    if mode not in ('response','native-transport'):raise ValueError('Unknown diagnostic mode')
+    return mode
+
+
+def validate_view_config(original,view):
+    # Paths resolve relative to _root; identical JSON at a different root is not equivalent.
+    if view.get('_root')!=original.get('_root') or view.get('_source')!=original.get('_source'):
+        raise ValueError('View config must retain exact source and project root')
+    ignored={'capture','_config'}
+    if {k:v for k,v in original.items() if k not in ignored}!={k:v for k,v in view.items() if k not in ignored}:
+        raise ValueError('View config changed a noncapture native field')
+    # Only camera views may differ, not another capture stage or HDR settings.
+    if {k:v for k,v in original.get('capture',{}).items() if k!='views'}!={k:v for k,v in view.get('capture',{}).items() if k!='views'}:
+        raise ValueError('View config changed another capture stage')
+    return view
+
+
+def capture_config(recipe,c,recipe_path):
+    if 'view_config' not in recipe:return c
+    if diagnostic_mode(recipe)!='native-transport':raise ValueError('Separate view config is native-transport opt-in only')
+    if not isinstance(recipe['view_config'],str) or not recipe['view_config'].strip():raise ValueError('Explicit view config path required')
+    from common import load_config
+    view=load_config((Path(recipe_path).parent/recipe['view_config']).resolve())
+    return validate_view_config(c,view)
+
+
+def light_policy(recipe,bake_lights,emitters):
+    # The legacy physical diagnostic still rejects analytic lights. Only the explicitly
+    # pure-baked mode hides them; it never presents that state as physical transport.
+    native=diagnostic_mode(recipe)=='native-transport'
+    if emitters or (bake_lights and not native):
+        raise ValueError('This diagnostic requires no visible emitters; legacy physical mode requires no analytic lights')
+    if native and selected_variants(recipe)!=('raw','processed'):raise ValueError('Native transport is pure baked only')
+    return {'configured_bake_lights_excluded':list(bake_lights),'pure_baked':native}
+
+
 def selected_variants(recipe):
+    if diagnostic_mode(recipe)=='native-transport':
+        if recipe.get('variants')!=['raw','processed']:raise ValueError('Native transport requires explicit raw and processed variants')
+        return ('raw','processed')
     if 'variants' not in recipe:return DEFAULT_VARIANTS
     if recipe['variants']==['processed']:return ('processed',)
     if recipe['variants']==['processed-ao-bypass']:return ('processed-ao-bypass',)
     raise ValueError('Only explicit single processed or processed-ao-bypass is supported as variant opt-in')
 
 
-def validate_recipe(recipe,c):
-    allowed={'schema_version','native_config','camera_ids','samples','physical_samples','crop','physical_objective_objects','variants','owned_evidence'}
+def validate_recipe(recipe,c,view=None):
+    allowed={'schema_version','native_config','camera_ids','samples','physical_samples','crop','physical_objective_objects','variants','owned_evidence','mode','view_config'}
     if not isinstance(recipe,dict) or set(recipe)-allowed or recipe.get('schema_version')!=1:
         raise ValueError('Expected explicit native-view-diagnostic recipe schema1')
     if not isinstance(recipe.get('native_config'),str) or not recipe['native_config'].strip():raise ValueError('Exact original native config required')
-    if c.get('finishing_overrides') or not c.get('receiver_response',{}).get('enabled'):
-        raise ValueError('Requires original native response recipe, no finishing overrides')
+    native=diagnostic_mode(recipe)=='native-transport'
+    response=c.get('receiver_response',{}).get('enabled',False)
+    if c.get('finishing_overrides') or (response if native else not response):
+        raise ValueError('Requires original native transport with response disabled' if native else 'Requires original native response recipe, no finishing overrides')
+    if not native and 'view_config' in recipe:raise ValueError('Separate view config is native-transport opt-in only')
+    if native and (recipe.get('owned_evidence') is not None or recipe.get('physical_objective_objects') or 'physical_samples' in recipe):
+        raise ValueError('Native transport mode has no response evidence or physical variant')
+    view=validate_view_config(c,view) if view is not None else c
     ids=recipe.get('camera_ids')
     if not isinstance(ids,list) or not ids or any(not isinstance(i,str) for i in ids) or len(set(ids))!=len(ids):raise ValueError('Unique retained baked camera IDs required')
     from camera_views import validate_camera_set
-    entries=validate_camera_set(c)
+    entries=validate_camera_set(view)
     selected=[]
     for identity in ids:
         matching=[entry for entry in entries if entry['id']==identity and entry.get('mode')=='baked']
         if len(matching)!=1:raise ValueError('Choose an existing original baked camera ID: '+str(identity))
         selected.append(copy.deepcopy(matching[0]))
-    for key,default in [('samples',c['capture']['views']['samples']),('physical_samples',128)]:
+    for key,default in [('samples',view['capture']['views']['samples']),('physical_samples',128)]:
         value=recipe.get(key,default)
         if isinstance(value,bool) or not isinstance(value,int) or not 1<=value<=65536:raise ValueError('Invalid diagnostic '+key)
     if recipe.get('crop') is not None:
-        crop=recipe['crop'];width,height=c['capture']['views']['dimensions']
+        crop=recipe['crop'];width,height=view['capture']['views']['dimensions']
         if not isinstance(crop,list) or len(crop)!=4 or any(isinstance(v,bool) or not isinstance(v,int) for v in crop):raise ValueError('Crop requires integer[x0,y0,x1,y1]')
         x0,y0,x1,y1=crop
         if not 0<=x0<x1<=width or not 0<=y0<y1<=height:raise ValueError('Diagnostic crop outside retained image')
@@ -89,7 +137,8 @@ def prepare(recipe_path,candidate,tool_root,output):
     from native_recombine import validate_original
     recipe_path=Path(recipe_path).resolve();recipe=read(recipe_path)
     c=load_config((recipe_path.parent/recipe['native_config']).resolve())
-    selected=validate_recipe(recipe,c)
+    view=capture_config(recipe,c,recipe_path)
+    selected=validate_recipe(recipe,c,view)
     output=Path(output).resolve();candidate=Path(candidate).resolve()
     if output.exists() or output==candidate or output.is_relative_to(candidate) or candidate.is_relative_to(output):
         raise ValueError('Use a new diagnostic directory separate from native candidate')
@@ -97,17 +146,31 @@ def prepare(recipe_path,candidate,tool_root,output):
     inputs=dict(plan['inputs'])
     inputs[str(recipe_path)]=sha(recipe_path)
     inputs[str(Path(__file__).resolve())]=sha(__file__)
-    for name in ('direct_response_raw.exr','indirect_response_raw.exr','direct_response_processed.exr','indirect_response_processed.exr','ao.exr','island_ids.exr','combined.exr','combined.provenance.json'):
+    native=diagnostic_mode(recipe)=='native-transport'
+    if view is not c:inputs[view['_config']]=sha(view['_config'])
+    names=('direct_final.exr','indirect_final.exr') if native else ('direct_response_raw.exr','indirect_response_raw.exr','direct_response_processed.exr','indirect_response_processed.exr')
+    names+=('island_ids.exr','combined.exr','combined.provenance.json')
+    if not native or c.get('ao',{}).get('enabled'):names+=('ao.exr',)
+    for name in names:
         path=candidate/'masters'/name
         if not path.is_file():raise ValueError('Required completed diagnostic master missing: '+name)
+        if native and inputs.get(str(path))!=sha(path):raise ValueError('Master lacks original completed-output proof: '+name)
         inputs[str(path)]=sha(path)
     output.mkdir(parents=True)
     report={'schema_version':1,'kind':'unaccepted-native-view-diagnostic','accepted':False,
-        'recipe':str(recipe_path),'native_config':c['_config'],'candidate':str(candidate),
+        'recipe':str(recipe_path),'native_config':c['_config'],'view_config':view['_config'],'mode':diagnostic_mode(recipe),'candidate':str(candidate),
         'source':c['_source'],'source_sha256':plan['source_sha256'],'geometry_sha256':plan['geometry_sha256'],
         'native_proof':plan,'inputs':inputs,'selected_cameras':selected,
         'raw_master_semantics':'Existing receiver_response raw master: actual owned native RGB times measured response then ordinary ownership.dilate; no OIDN or diagnostic resynthesis.',
         'limits':'Diagnostic views are not new accepted combinations/captures or physical metallic-cap equivalence. Physical diffuse output is ungraded; saved source controls are unchanged.'}
+    if native:
+        # The preserved historical tree validates the original bake. Independently bind
+        # current installed diagnostic dependencies, so neither provenance is substituted.
+        current_tools={str(path.resolve()):sha(path) for path in HERE.parent.rglob('*.py')}
+        inputs.update(current_tools)
+        report['diagnostic_tool_inputs']=current_tools
+        report['native_raw']=prepare_native_raw(candidate,output,inputs)
+        report['raw_master_semantics']='Actual ownership-stage capped/normalized native RGB, unchanged on owned pixels, ordinary ownership.dilate padding only; no response, OIDN or owner inference.'
     save(output/'verified-inputs.json',report)
     if recipe.get('owned_evidence'):
         evidence=native_owned_evidence(candidate,recipe['owned_evidence'],inputs)
@@ -115,8 +178,54 @@ def prepare(recipe_path,candidate,tool_root,output):
     return c,report
 
 
+def ordinary_native_arrays(labels,direct,indirect):
+    import numpy as np
+    from ownership import dilate
+    labels=np.asarray(labels)
+    if labels.ndim!=2 or not np.issubdtype(labels.dtype,np.integer) or (labels<0).any() or not (labels>0).any():
+        raise ValueError('Actual positive native ownership required')
+    result={}
+    for role,array in (('direct',direct),('indirect',indirect)):
+        array=np.asarray(array)
+        if array.dtype!=np.float32 or array.shape!=labels.shape+(4,) or not np.isfinite(array).all():raise ValueError('Finite float32 native RGBA required')
+        if not np.array_equal(array[:,:,3],(labels>0).astype(np.float32)):raise ValueError('Owned raw coverage differs from native labels')
+        result[role]=dilate(array,labels)
+        if not np.array_equal(result[role][labels>0],array[labels>0]):raise ValueError('Ordinary padding changed owned native values')
+    return result
+
+
+def prepare_native_raw(root,output,inputs):
+    import numpy as np
+    from native_ownership import validate_native_ids
+    root=Path(root);output=Path(output)
+    paths={'labels':root/'ownership/labels.npy','direct':root/'ownership/direct_raw.npy','indirect':root/'ownership/indirect_raw.npy',
+        'catalogue':root/'bake/islands.json','native_ids':root/'bake/native_island_ids.npy','native_D':root/'bake/direct_raw.npy','native_I':root/'bake/indirect_raw.npy'}
+    for path in paths.values():
+        if inputs.get(str(path.resolve()))!=sha(path):raise ValueError('Raw diagnostic input lacks original completed-output proof: '+str(path))
+    labels,validation=validate_native_ids(np.load(paths['native_ids'],allow_pickle=False),read(paths['catalogue']),
+        np.load(paths['native_D'],allow_pickle=False),np.load(paths['native_I'],allow_pickle=False))
+    if not np.array_equal(labels,np.load(paths['labels'],allow_pickle=False)):raise ValueError('Saved owner labels differ from exact native IDs')
+    arrays=ordinary_native_arrays(labels,*(np.load(paths[k],allow_pickle=False) for k in ('direct','indirect')))
+    directory=output/'raw-ordinary';directory.mkdir()
+    maps={}
+    for role,array in arrays.items():
+        path=directory/(role+'.npy');np.save(path,array,allow_pickle=False);inputs[str(path)]=sha(path)
+        maps[role]={'array':str(path),'sha256':sha(path),'dimensions':[array.shape[1],array.shape[0]],'owned_exact':True}
+    return {'maps':maps,'source_paths_sha256':{str(p):sha(p) for p in paths.values()},'native_validation':validation,
+        'owned_pixels':int((labels>0).sum()),'padding':'Existing ownership.dilate nearest-owned padding; no OIDN, response, synthesis or native owner reassignment',
+        'array_origin':'top-left, matching original native arrays','accepted':False}
+
+
+def native_sampler_colorspace(role,colorspace):
+    if role in ('colour','colour_adjustment'):valid=colorspace=='sRGB'
+    elif role in ('direct','indirect'):valid=colorspace in ('Non-Color','Linear Rec.709')
+    elif role in ('island_ids','ao'):valid=colorspace=='Non-Color'
+    else:raise ValueError('Unknown managed native sampler role: '+str(role))
+    if not valid:raise ValueError('Unexpected native sampler interpretation '+role+': '+colorspace)
+
+
 @contextmanager
-def preview_variant(material,root,variant):
+def preview_variant(material,root,variant,*,native_maps=None):
     """Copy the complete saved graph; replace only D/I samplers, restore all source state."""
     import bpy
     from appearance import preview_identity
@@ -136,16 +245,27 @@ def preview_variant(material,root,variant):
         for tree in [clone.node_tree]+list(groups.values()):
             for node in tree.nodes:
                 role=node.get('bjs_preview_image_role')
-                if node.type=='TEX_IMAGE' and role in ('direct','indirect'):
+                if node.type=='TEX_IMAGE' and (role in ('direct','indirect') or (native_maps is not None and role)):
+                    if native_maps is not None and variant not in ('raw','processed'):raise ValueError('Native transport variant must be raw or processed')
                     original=node.image
                     if original is None:raise ValueError('Response sampler lacks original image')
-                    if role not in bound:
-                        path=root/'masters'/(role+'_response_'+response_variant+'.exr')
+                    if native_maps is not None:
+                        native_sampler_colorspace(role,original.colorspace_settings.name)
+                        if role=='colour_adjustment' and original.alpha_mode!='CHANNEL_PACKED':
+                            raise ValueError('Appearance sampler requires Channel Packed influence alpha')
+                    # Retain every sampler setting and role association. Shared references
+                    # reuse one fresh image, but the receipt lists every sampler separately.
+                    key=(role,original.as_pointer()) if native_maps is not None else role
+                    if key not in bound:
+                        path=(Path(native_maps[role]) if role in ('direct','indirect') else Path(bpy.path.abspath(original.filepath))) if native_maps is not None else root/'masters'/(role+'_response_'+response_variant+'.exr')
+                        if not path.is_file():raise ValueError('Actual managed diagnostic image missing: '+str(path))
                         image=bpy.data.images.load(str(path),check_existing=False);images.append(image)
                         image.colorspace_settings.name=original.colorspace_settings.name;image.alpha_mode=original.alpha_mode
-                        bound[role]={'path':str(path),'sha256':sha(path),'colorspace':image.colorspace_settings.name,'alpha_mode':image.alpha_mode,'image':image}
-                    node.image=bound[role]['image']
-        if set(bound)!={'direct','indirect'}:raise ValueError('Diagnostic requires explicit managed D/I sampler roles')
+                        bound[key]={'role':role,'path':str(path),'sha256':sha(path),'colorspace':image.colorspace_settings.name,'alpha_mode':image.alpha_mode,'image':image,'samplers':[]}
+                    node.image=bound[key]['image']
+                    bound[key]['samplers'].append({'node':node.name,'tree':tree.name,'interpolation':node.interpolation,'extension':node.extension})
+        roles={row['role'] for row in bound.values()}
+        if not {'direct','indirect'}<=roles:raise ValueError('Diagnostic requires explicit managed D/I sampler roles')
         from babylon_js import lightmap_grading
         original_control,_=lightmap_grading.inspect(material);clone_control,_=lightmap_grading.inspect(clone)
         original_values={i.name:float(i.default_value) for i in original_control.inputs if i.type=='VALUE'}
@@ -158,7 +278,8 @@ def preview_variant(material,root,variant):
         clone_values={i.name:float(i.default_value) for i in clone_control.inputs if i.type=='VALUE'}
         if any(clone_values[k]!=value for k,value in original_values.items() if k!='AO Strength'):raise RuntimeError('AO bypass changed another saved control')
         record={'variant':variant,'accepted':False,'original_preview_sha256':before,'variant_preview_sha256':preview_identity(clone),
-            'bindings':{role:{k:v for k,v in row.items() if k!='image'} for role,row in bound.items()},
+            'bindings':{str(key):{k:v for k,v in row.items() if k!='image'} for key,row in bound.items()},
+            'mode':'native-transport' if native_maps is not None else 'response',
             'response_variant':response_variant,'saved_grades_AO_colour_unchanged':variant!='processed-ao-bypass',
             'only_AO_strength_bypassed':variant=='processed-ao-bypass','original_actual_controls':original_values,'clone_actual_controls':clone_values,
             'combined_provenance_claim':'None for variant; original accepted provenance verified separately.'}
@@ -215,18 +336,26 @@ def diffuse_passes(scene,view_layer):
     flags=['use_pass_diffuse_direct','use_pass_diffuse_indirect','use_pass_diffuse_color']
     before={key:getattr(view_layer,key) for key in flags}
     compositing=scene.render.use_compositing;denoising=scene.cycles.use_denoising
+    sequencer=getattr(scene.render,'use_sequencer',None)
+    layer_cycles=getattr(view_layer,'cycles',None)
+    layer_denoising=getattr(layer_cycles,'use_denoising',None)
     with image_format_transaction(scene.render.image_settings):
         try:
             set_image_format(scene.render.image_settings,'OPEN_EXR_MULTILAYER',interleave=True)
             scene.render.image_settings.color_mode='RGBA';scene.render.image_settings.color_depth='32';scene.render.image_settings.exr_codec='ZIP'
             for key in flags:setattr(view_layer,key,True)
             scene.render.use_compositing=False;scene.cycles.use_denoising=False
+            if sequencer is not None:scene.render.use_sequencer=False
+            if layer_denoising is not None:layer_cycles.use_denoising=False
             yield {'formula':'(Diffuse Direct + Diffuse Indirect) * Diffuse Color','glossy_emission_excluded':True,
-                   'compositor_used':False,'denoise':False,'multilayer_file_settings':image_format_state(scene.render.image_settings),
+                   'compositor_used':False,'sequencer_used':False,'denoise':False,'layer_denoise':False,
+                   'multilayer_file_settings':image_format_state(scene.render.image_settings),
                    'channels':'Actual interleaved Cycles multilayer EXR passes, not Combined or a Principled approximation.'}
         finally:
             for key,value in before.items():setattr(view_layer,key,value)
             scene.render.use_compositing=compositing;scene.cycles.use_denoising=denoising
+            if sequencer is not None:scene.render.use_sequencer=sequencer
+            if layer_denoising is not None:layer_cycles.use_denoising=layer_denoising
 
 
 def compose_diffuse(direct,indirect,colour):
@@ -378,7 +507,7 @@ def blender_capture(output):
     from ao import geometry_identity
     from babylon_js import environment_controls,lightmap_grading
     output=Path(output);proof=read(output/'verified-inputs.json');verify_inputs(proof['inputs'])
-    recipe=read(proof['recipe']);c=load_config(proof['native_config']);entries=validate_recipe(recipe,c)
+    recipe=read(proof['recipe']);c=load_config(proof['native_config']);view=capture_config(recipe,c,proof['recipe']);entries=validate_recipe(recipe,c,view)
     if not bpy.app.background or Path(bpy.data.filepath).resolve()!=Path(c['_source']):raise ValueError('Diagnostics require exact immutable source in disposable background Blender')
     root=Path(proof['candidate']);scene=bpy.data.scenes[c['scene']];bpy.context.window.scene=scene;bpy.context.view_layer.update()
     original_hide={o:o.hide_render for o in scene.objects};original_camera=scene.camera
@@ -390,7 +519,18 @@ def blender_capture(output):
     geometry=geometry_identity(c);assert geometry['geometry_sha256']==proof['geometry_sha256']
     scene=setup(c)
     receivers,contributors,glass=[select(c,k) for k in ('receivers','contributors','glass')]
-    if select(c,'visible_emitters') or select(c,'bake_lights'):raise ValueError('This bounded diffuse diagnostic requires no analytic lights or visible emitters')
+    light_receipt=light_policy(recipe,[o.name for o in select(c,'bake_lights')],[o.name for o in select(c,'visible_emitters')])
+    native_maps=None
+    if diagnostic_mode(recipe)=='native-transport':
+        raw_maps={}
+        for role,row in proof['native_raw']['maps'].items():
+            path=output/'raw-ordinary'/(role+'.exr')
+            if path.exists():raise ValueError('Preserve existing raw diagnostic master')
+            write_exr(path,np.load(row['array'],allow_pickle=False))
+            raw_maps[role]=str(path)
+        raw_receipt={**proof['native_raw'],'EXR':{role:{'path':path,'sha256':sha(path),'colorspace':'lin_rec709_scene'} for role,path in raw_maps.items()}}
+        save(output/'raw-ordinary/provenance.json',raw_receipt)
+        native_maps={'raw':raw_maps,'processed':{role:str(root/'masters'/(role+'_final.exr')) for role in ('direct','indirect')}}
     visible=set(receivers+contributors+glass)
     for obj in scene.objects:obj.hide_render=obj not in visible
     eligible=set()
@@ -406,7 +546,9 @@ def blender_capture(output):
     routing=check_physical_world_routing(c,controls,world_output)
     world=environment_controls.settings(controls)
     ctrl,_=lightmap_grading.inspect(material);saved_controls={i.name:float(i.default_value) for i in ctrl.inputs if i.type=='VALUE'}
-    spec=c['capture']['views'];scene.render.resolution_x,scene.render.resolution_y=spec['dimensions'];scene.render.resolution_percentage=100
+    actual_lights=[o.name for o in scene.objects if o.type=='LIGHT' and not o.hide_render]
+    if actual_lights:raise ValueError('Pure diagnostic unexpectedly retains analytic lights')
+    spec=view['capture']['views'];scene.render.resolution_x,scene.render.resolution_y=spec['dimensions'];scene.render.resolution_percentage=100
     scene.render.pixel_aspect_x=scene.render.pixel_aspect_y=1;scene.render.use_border=False;scene.render.film_transparent=False
     for key in ('view_transform','look','exposure','gamma'):setattr(scene.view_settings,key,spec['display'][key])
     scene.cycles.use_denoising=False;scene.cycles.time_limit=0;scene.cycles.use_adaptive_sampling=False
@@ -433,7 +575,7 @@ def blender_capture(output):
                     set_image_format(scene.render.image_settings,'OPEN_EXR')
                     scene.render.image_settings.color_mode='RGB';scene.render.image_settings.color_depth='32';scene.render.image_settings.exr_codec='ZIP'
                     if variant!='physical-diffuse':
-                        with preview_variant(material,root,variant) as (clone,application):
+                        with preview_variant(material,root,variant,native_maps=native_maps[variant] if native_maps is not None else None) as (clone,application):
                             with _baked_materials(receivers,clone):
                                 scene.render.filepath=str(linear);bpy.ops.render.render(write_still=True)
                     else:
@@ -453,9 +595,10 @@ def blender_capture(output):
                         'source_sha256':proof['source_sha256'],'geometry_sha256':geometry['geometry_sha256'],'camera':entry['camera'],
                         'matrix_world':[list(row) for row in camera.matrix_world],'camera_properties':_camera_data_receipt(data),'samples':scene.cycles.samples,'denoise':False,'adaptive':False,
                         'dimensions':list(spec['dimensions']),'display':dict(spec['display']),'World':world,'routing':routing,'saved_controls':saved_controls,
-                        'visible_meshes':len(visible),'analytic_lights':0,'physical_tint_strength':c['physical_colour_adjustment']['strength'],
+                        'visible_meshes':len(visible),'analytic_lights':len(actual_lights),'light_policy':light_receipt,'physical_tint_strength':c.get('physical_colour_adjustment',{}).get('strength',0),
+                        'native_config':proof['native_config'],'native_config_sha256':sha(proof['native_config']),'view_config':view['_config'],'view_config_sha256':sha(view['_config']),
                         'application':application,'baseline_combination_verification':combination,'baseline_combination_is_variant_provenance':False,
-                        'limits':'Controlled diagnostic only; raw/processed emission shares saved grading/AO/tint. Physical DD+DI times DC is an ungraded diffuse reference; no glossy/emission channels, no cap equivalence on metallic receivers.'}
+                        'limits':'Unaccepted controlled diagnostic. Raw/processed use the same saved graph and controls. Native-transport raw uses ordinary padded ownership RGB; processed uses actual final masters. No new native capture or combination provenance. Physical diffuse, when explicitly present in legacy mode, is not metallic-cap equivalent.'}
                     save(output/(stem+'.receipt.json'),record);records.append(record)
             finally:
                 scene.camera=original_camera;bpy.data.objects.remove(camera,do_unlink=True);bpy.data.cameras.remove(data)

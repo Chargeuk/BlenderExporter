@@ -118,6 +118,8 @@ def assemble(config_path,stage_a,output):
     import bpy
     from babylon_js.environment_lighting_volume import export_volume,saved_options
     config_path=Path(config_path).resolve();config=read(config_path);route(config)
+    from recipe_cli import validate_volume_export_routes
+    validate_volume_export_routes(config)
     source=source_path(config,config_path)
     require(bpy.app.background and Path(bpy.data.filepath).resolve()==source,'Open the exact untouched saved source for Stage B')
     require(not bpy.data.is_dirty and not any(i.is_dirty for i in bpy.data.images),'Stage B requires a clean saved source')
@@ -156,6 +158,8 @@ def assemble(config_path,stage_a,output):
 
 def run_pipeline(config_path,output,blender):
     config_path=Path(config_path).resolve();config=read(config_path);route(config)
+    from recipe_cli import validate_volume_export_routes
+    validate_volume_export_routes(config)
     source=source_path(config,config_path);source_hash=sha(source);config_hash=sha(config_path);require(source_hash==config['source_sha256'],'Saved assembly source changed')
     output=Path(output).resolve();require(not output.exists() and not output.is_relative_to(config_path.parent),'Use fresh scratch assembly output');output.mkdir(parents=True)
     flags={'creationflags':subprocess.CREATE_NO_WINDOW}if os.name=='nt'else{}

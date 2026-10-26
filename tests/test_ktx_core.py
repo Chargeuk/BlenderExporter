@@ -1,6 +1,8 @@
 """Mapping/overwrite regressions plus a small real KTX integration fixture."""
 import copy
 import json
+import os
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
@@ -127,9 +129,14 @@ class MappingTests(unittest.TestCase):
         self.assertTrue(all(p.read_text() == 'previous' for p in destination.iterdir()))
 
     def test_real_ktx_multi_model_conversion(self):
-        tool = Path('H:/code/texture-tools/KTX-Software-4.4.2/bin/ktx.exe')
-        if not tool.is_file():
-            self.skipTest('Native Windows integration KTX not installed')
+        configured = os.environ.get('BJS_TEST_KTX')
+        candidates = ([configured] if configured is not None else
+                      ['H:/code/texture-tools/KTX-Software-4.4.2/bin/ktx.exe', shutil.which('ktx')])
+        tool = next((Path(value) for value in candidates if value and Path(value).is_file()), None)
+        if tool is None:
+            if configured is not None:
+                self.skipTest('Configured BJS_TEST_KTX executable is unavailable: ' + configured)
+            self.skipTest('No native KTX executable found; set BJS_TEST_KTX to an existing executable')
         report = c.run_conversion(self.plan(), str(tool), 2)
         self.assertEqual(report['status'], 'passed')
         self.assertEqual(len(report['delivery_files']), 5)

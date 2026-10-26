@@ -99,8 +99,173 @@ def chart_ids(rows):
     return result
 
 
+def _point_segment(point, first, second):
+    dx, dy = second[0]-first[0], second[1]-first[1]
+    length2 = dx*dx+dy*dy
+    t = max(0., min(1., ((point[0]-first[0])*dx+(point[1]-first[1])*dy)/length2)) if length2 else 0.
+    nearest = (first[0]+t*dx, first[1]+t*dy)
+    return (point[0]-nearest[0])**2+(point[1]-nearest[1])**2, nearest
+
+
+def _segment_distance(a, b, c, d):
+    """Squared distance and closest points, including collinear/zero-length edges."""
+    ab_c, ab_d = _geometry._cross(a, b, c), _geometry._cross(a, b, d)
+    cd_a, cd_b = _geometry._cross(c, d, a), _geometry._cross(c, d, b)
+    if ((ab_c < 0 < ab_d or ab_d < 0 < ab_c)
+            and (cd_a < 0 < cd_b or cd_b < 0 < cd_a)):
+        t = cd_a/(cd_a-cd_b)
+        point = (a[0]+t*(b[0]-a[0]), a[1]+t*(b[1]-a[1]))
+        return 0., point, point
+    result = []
+    for point in (a, b):
+        distance, nearest = _point_segment(point, c, d)
+        result.append((distance, point, nearest))
+    for point in (c, d):
+        distance, nearest = _point_segment(point, a, b)
+        result.append((distance, nearest, point))
+    return min(result)
+
+
+def _inside_triangle(point, triangle):
+    if _geometry._cross(*triangle) == 0:
+        return False
+    sides = [_geometry._cross(triangle[i], triangle[(i+1) % 3], point) for i in range(3)]
+    return min(sides) >= 0 or max(sides) <= 0
+
+
+def _triangle_distance(first, second):
+    # Containment must be checked even when the overlap-area audit's tolerance
+    # suppresses the pair. Distance is zero for intersecting filled triangles.
+    for a, b, reverse in ((first, second, False), (second, first, True)):
+        if _inside_triangle(a[0], b):
+            return 0., (None if reverse else 0), (0 if reverse else None), a[0], a[0]
+    best = (math.inf, None, None, None, None)
+    for i in range(3):
+        for j in range(3):
+            distance, p, q = _segment_distance(first[i], first[(i+1) % 3], second[j], second[(j+1) % 3])
+            if distance < best[0]:
+                best = distance, i, j, p, q
+                if distance == 0:
+                    return best
+    return best
+
+
+def _box_distance(first, second):
+    dx = max(0., first[0]-second[2], second[0]-first[2])
+    dy = max(0., first[1]-second[3], second[1]-first[3])
+    return dx*dx+dy*dy
+
+
+def _clearance(rows, uv, charts, pixels, tolerance_pixels, max_candidates, identity):
+    """Minimum distance between filled chart unions, without allocating pair arrays.
+
+    For disjoint closed triangle unions, their minimum distance is attained on
+    their boundaries. Every triangle edge is in its union, and every union
+    boundary is on a triangle edge, so minimizing ALL edges gives the same
+    minimum. Internal edges cannot invent a smaller disjoint-union gap. Filled
+    triangle containment/intersection explicitly gives zero for overlapping
+    charts, including concave charts and sub-tolerance overlap areas.
+    """
+    triangles = [tuple(map(tuple, triangle)) for triangle in uv.tolist()]
+    keys = [(row['object'], charts[i]) for i, row in enumerate(rows)]
+    records = [{'bounds': _geometry._box(triangle)} for triangle in triangles]
+    tree = _geometry._tree(list(range(len(rows))), records)
+    # Annotate the existing AABB tree with homogeneous chart identity and maximum
+    # row index, pruning same-chart and already visited pairs at entire subtrees.
+    def annotate(node):
+        box, indices, left, right = node
+        if indices is not None:
+            key = keys[indices[0]]
+            return box, indices, None, None, key if all(keys[i] == key for i in indices) else None, max(indices)
+        left, right = annotate(left), annotate(right)
+        return box, None, left, right, left[4] if left[4] == right[4] else None, max(left[5], right[5])
+    tree = annotate(tree)
+    best, witness, tested, visited, box_candidates = math.inf, None, 0, 0, 0
+    complete = True
+    for index, triangle in enumerate(triangles):
+        queue, serial = [(0., 0, tree)], 0
+        while queue:
+            lower, _, node = heapq.heappop(queue)
+            visited += 1
+            if lower >= best or node[5] <= index or node[4] == keys[index]:
+                continue
+            if node[1] is None:
+                for child in (node[2], node[3]):
+                    bound = _box_distance(records[index]['bounds'], child[0])
+                    if bound < best:
+                        serial += 1
+                        heapq.heappush(queue, (bound, serial, child))
+                continue
+            for other in node[1]:
+                if other <= index or keys[index] == keys[other]:
+                    continue
+                box_candidates += 1
+                if _box_distance(records[index]['bounds'], records[other]['bounds']) >= best:
+                    continue
+                if max_candidates is not None and tested >= max_candidates:
+                    complete = False
+                    break
+                tested += 1
+                result = _triangle_distance(triangle, triangles[other])
+                if result[0] < best:
+                    best = result[0]
+                    witness = {'first': dict(identity(index), segment=result[1], point_uv=list(result[3])),
+                               'second': dict(identity(other), segment=result[2], point_uv=list(result[4]))}
+                if best == 0:
+                    break
+            if not complete or best == 0:
+                break
+        if not complete or best == 0:
+            break
+    measured = math.sqrt(best)*pixels if math.isfinite(best) else None
+    border, border_witness = math.inf, None
+    borders = (((0., 0.), (0., 1.)), ((1., 0.), (1., 1.)),
+               ((0., 0.), (1., 0.)), ((0., 1.), (1., 1.)))
+    border_tests = 0
+    for index, triangle in enumerate(triangles):
+        for side, (a, b) in enumerate(borders):
+            for segment in range(3):
+                border_tests += 1
+                distance, p, q = _segment_distance(triangle[segment], triangle[(segment+1) % 3], a, b)
+                if _inside_triangle(a, triangle):
+                    distance, p, q, segment = 0., a, a, None
+                if distance < border:
+                    border = distance
+                    border_witness = dict(identity(index), segment=segment, point_uv=list(p),
+                                          tile_segment=side, tile_point_uv=list(q))
+                if border == 0:
+                    break
+            if border == 0:
+                break
+        if border == 0:
+            break
+    border_pixels = math.sqrt(border)*pixels
+    inset = min(float(uv.min()), float((1-uv).min()))*pixels
+    return {'complete': complete, 'status': 'measured' if complete else 'incomplete',
+        'minimum_inter_chart_clearance_pixels': (0. if measured is not None and measured <= tolerance_pixels else measured) if complete else None,
+        'observed_inter_chart_upper_bound_pixels': measured,
+        'inter_chart_witness': witness,
+        'minimum_tile_border_distance_pixels': 0. if border_pixels <= tolerance_pixels else border_pixels,
+        'signed_tile_inset_pixels': inset, 'tile_border_witness': border_witness,
+        'settings': {'distance_tolerance_pixels': tolerance_pixels, 'distance_tolerance_uv': tolerance_pixels/pixels,
+                     'max_candidate_pairs': max_candidates, 'arithmetic': 'binary64', 'aabb_leaf_size': 8,
+                     'segment_index_definition': 'Triangle UV corner i to (i+1)%3; null means triangle interior containment.',
+                     'tile_segment_definition': ['u=0', 'u=1', 'v=0', 'v=1']},
+        'counts': {'visited_aabb_nodes': visited, 'leaf_candidate_pairs': box_candidates,
+                   'tested_triangle_pairs': tested, 'tested_border_segment_pairs': border_tests},
+        'limits': ['Minimum over different (object, chart) identities; same-chart edges are never compared.',
+            'All triangles, including degenerate ones, participate as closed sets; degeneracy remains a separate audit issue.',
+            'Disjoint filled-union distance equals boundary clearance. Touch/intersection/containment has distance zero, regardless of overlap-area tolerance.',
+            'Binary64 geometry, not exact arithmetic. Distances at/below the explicit pixel tolerance are reported as zero; witnesses retain unrounded coordinates.',
+            'Border distance is Euclidean distance to the four closed tile edges; signed_tile_inset_pixels is negative for any coordinate outside the tile, even when border distance is positive.',
+            'Fewer than two charts yields a null inter-chart minimum. A candidate cap yields null certified minimum and only an observed upper bound.',
+            'AABB broadphase is output-sensitive; adversarial dense layouts may still require quadratic work. No quadratic pair array is allocated.',
+            'Geometric clearance does not establish raster coverage, mip/filter safety, dilation or bake quality.']}
+
+
 def audit(snapshot, *, pixels, overlap_area_tolerance, grid_size=64, max_issues=100,
-          degenerate_area_tolerance=0.0, bounds_tolerance=0.0, max_candidate_pairs=None):
+          degenerate_area_tolerance=0.0, bounds_tolerance=0.0, max_candidate_pairs=None,
+          measure_clearance=False, clearance_tolerance_pixels=1e-9, max_clearance_candidate_pairs=None):
     """Audit all intended UV2 participants; selectors/exclusions belong in the snapshot's provenance."""
     if snapshot.get('schema_version') != 1 or not isinstance(snapshot.get('triangles'), list):
         raise ValueError('Expected UV snapshot schema_version 1 and triangle rows')
@@ -114,6 +279,12 @@ def audit(snapshot, *, pixels, overlap_area_tolerance, grid_size=64, max_issues=
         raise ValueError('Invalid grid size or issue limit')
     if max_candidate_pairs is not None and (not isinstance(max_candidate_pairs, int) or max_candidate_pairs < 1):
         raise ValueError('Invalid explicit candidate-pair limit')
+    if not isinstance(measure_clearance, bool):
+        raise ValueError('measure_clearance must be boolean')
+    if not math.isfinite(clearance_tolerance_pixels) or clearance_tolerance_pixels < 0:
+        raise ValueError('Clearance tolerance must be finite and nonnegative')
+    if max_clearance_candidate_pairs is not None and (type(max_clearance_candidate_pairs) is not int or max_clearance_candidate_pairs < 1):
+        raise ValueError('Invalid explicit clearance candidate-pair limit')
     rows = snapshot['triangles']
     if not rows:
         raise ValueError('No intended UV triangles')
@@ -202,7 +373,7 @@ def audit(snapshot, *, pixels, overlap_area_tolerance, grid_size=64, max_issues=
             'convex_hull_area_uv2': polygon_area(hull),
             'convex_hull_minimum_caliper_width_pixels': hull_minimum_width(hull)*pixels,
             'minimum_triangle_altitude_pixels': float(altitudes[indices].min())})
-    return {'schema_version': 1, 'kind': 'uv2-positive-area-audit', 'complete': complete,
+    report = {'schema_version': 1, 'kind': 'uv2-positive-area-audit', 'complete': complete,
         'status': ('incomplete' if not complete else 'issues' if overlaps or degenerate.any() or out_of_bounds.any() else 'passed'),
         'snapshot_provenance': snapshot.get('provenance', {}),
         'settings': {'float_dtype': 'float64', 'pixel_reference': [pixels, pixels],
@@ -232,6 +403,12 @@ def audit(snapshot, *, pixels, overlap_area_tolerance, grid_size=64, max_issues=
             'Convex-hull caliper width describes the hull, not an internal neck or every local chart width. Triangle altitude is a diagnostic, not a deletion rule.',
             'Thin charts require visual review. Actual COLOR-excluded bake alpha and ownership rasterization remain the authority for sampled/unsampled chart coverage.',
             'No UV edits, packing, geometry deletion or automatic receiver exclusion. Grid candidate limit, if supplied, produces an incomplete result rather than a pass.']}
+    if measure_clearance:
+        report['clearance'] = _clearance(rows, uv, charts, pixels, clearance_tolerance_pixels,
+                                         max_clearance_candidate_pairs, identity)
+        if not report['clearance']['complete']:
+            report['complete'], report['status'] = False, 'incomplete'
+    return report
 
 
 def main():
@@ -242,11 +419,16 @@ def main():
     parser.add_argument('--grid-size', type=int, default=64)
     parser.add_argument('--max-issues', type=int, default=100)
     parser.add_argument('--max-candidate-pairs', type=int)
+    parser.add_argument('--measure-clearance', action='store_true', help='Measure Euclidean inter-chart and tile-border distances')
+    parser.add_argument('--clearance-tolerance-pixels', type=float, default=1e-9)
+    parser.add_argument('--max-clearance-candidate-pairs', type=int)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     snapshot = json.loads(args.snapshot.read_text(encoding='utf8'))
     result = audit(snapshot, pixels=args.pixels, overlap_area_tolerance=args.overlap_area_tolerance,
-        grid_size=args.grid_size, max_issues=args.max_issues, max_candidate_pairs=args.max_candidate_pairs)
+        grid_size=args.grid_size, max_issues=args.max_issues, max_candidate_pairs=args.max_candidate_pairs,
+        measure_clearance=args.measure_clearance, clearance_tolerance_pixels=args.clearance_tolerance_pixels,
+        max_clearance_candidate_pairs=args.max_clearance_candidate_pairs)
     result['input_snapshot'] = {'path': str(args.snapshot.resolve()),
                               'sha256': hashlib.sha256(args.snapshot.read_bytes()).hexdigest()}
     result['audit_helper_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()

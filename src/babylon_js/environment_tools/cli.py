@@ -35,7 +35,7 @@ def validate_pipeline_config(c):
 
 def preparation_command(argv):
     """Preparation shares this entrypoint without requiring denoising tools."""
-    from recipe_cli import main as recipe_main
+    from recipe_cli import main as recipe_main, native_diagnostic_settings, validate_volume_export_routes
     p=argparse.ArgumentParser(description='Prepare a disposable source/export from project policy')
     p.add_argument('command',choices=('prepare-physical','prepare-albedo','prepare-export','bind-candidate'))
     p.add_argument('--config',type=Path,required=True)
@@ -54,6 +54,8 @@ def preparation_command(argv):
         return
     if not a.blender:p.error('Preparation requires --blender')
     config=json.loads(a.config.read_text(encoding='utf-8-sig'))
+    if command=='export':
+        validate_volume_export_routes(config)
     if command=='export' and config.get('volume_export_route') is not None and not a.audit_only:
         from volume_assembly import run_pipeline
         run_pipeline(a.config,a.output,a.blender)
@@ -65,7 +67,12 @@ def preparation_command(argv):
         extra=['--size',str(a.size)]+(['--reuse-current'] if a.reuse_current else [])
     if command=='export' and a.audit_only:extra=['--audit-only']
     flags={'creationflags':subprocess.CREATE_NO_WINDOW} if sys.platform=='win32' else {}
-    subprocess.run([str(a.blender),'-b',str(source),'--python-exit-code','1','--python',str(HERE/'recipe_cli.py'),
+    launch=[str(a.blender),'-b',str(source)]
+    if command=='export' and 'native_diagnostic' in config:
+        native_diagnostic_settings(config)
+        # Explicit native diagnostics need registered RNA, not saved preferences.
+        launch=[str(a.blender),'--background','--factory-startup','--disable-autoexec','--addons','babylon_js',str(source)]
+    subprocess.run(launch+['--python-exit-code','1','--python',str(HERE/'recipe_cli.py'),
         '--',command,'--config',str(a.config.resolve()),str(a.output.resolve()),*extra],check=True,**flags)
 
 
@@ -87,12 +94,14 @@ def main():
     p.add_argument('--geometry-reference', type=Path, help='Original bake geometry/result.json; required for AO-only reuse')
     p.add_argument('--rebake-ao', action='store_true', help='Regenerate only AO while reusing D/I; implicit for the ao command')
     p.add_argument('--env-converter',type=Path,help='Optional maintained Node convert.cjs; enables ENV conversion')
-    p.add_argument('--recombine-native-from',type=Path,help='Immutable original native candidate; only finishing_overrides may differ')
+    p.add_argument('--recombine-native-from',type=Path,help='Immutable original native candidate; only scalar finishing and opt-in appearance map may differ')
     p.add_argument('--original-tool-source-root',type=Path,help='Preserved complete original add-on source plus final-source provenance')
     a = p.parse_args(); c = load_config(a.config); validate_pipeline_config(c); root = a.output.resolve()
     view_entries=validate_camera_set(c)
     if view_entries and c['capture']['views'].get('delivery_contract'):
         raise ValueError('Use installed workflow_tools/decoded_delivery.py render-views; delivery inspection never runs the bake chain')
+    if view_entries and any(entry.get('mode', c['capture']['views'].get('mode', 'baked')) == 'physical-diffuse' for entry in view_entries):
+        raise ValueError('Use installed environment_tools/camera_views.py --physical-diffuse; immutable physical references never relink or run the bake chain')
     native_ownership=ownership_method(c)=='native-island-id'
     native_plan=None
     if a.recombine_native_from:
@@ -100,8 +109,8 @@ def main():
             raise ValueError('Native recombine requires original tool source, a combine-or-later command, and no legacy reuse/rebake flags')
         from native_recombine import validate_original
         native_plan=validate_original(c,a.recombine_native_from,a.original_tool_source_root)
-    elif a.original_tool_source_root or c.get('finishing_overrides'):
-        raise ValueError('Finishing overrides/original tool source require --recombine-native-from')
+    elif a.original_tool_source_root or c.get('finishing_overrides') or 'appearance_colour_adjustment' in c:
+        raise ValueError('Finishing/appearance declaration and original tool source require --recombine-native-from')
     if native_ownership and a.reuse_lightmaps:
         raise ValueError('native-island-id ownership requires a fresh candidate with its matching native receipt; --reuse-lightmaps/--recombine is not supported')
     if a.command=='views' and not view_entries:
@@ -133,7 +142,10 @@ def main():
         inputs[str(f)] = sha(f)
     for im in c.get('source_images', []):
         f = (source_root/im).resolve(); inputs[str(f)] = sha(f)
-    if native_plan:inputs.update(native_plan['inputs'])
+    if native_plan:
+        inputs.update(native_plan['inputs'])
+        if native_plan.get('appearance_colour_adjustment'):
+            inputs[str(HERE.parent/'colour_adjustment.py')]=sha(HERE.parent/'colour_adjustment.py')
     inputs[str(a.oidn_library.resolve())] = sha(a.oidn_library)
     inputs['reuse_lightmaps']=a.reuse_lightmaps
     inputs['recombine']=recombine
@@ -316,6 +328,10 @@ def main():
                 record['native_recombine_provenance_sha256']=sha(root/'native_recombine.provenance.json')
                 record['original_native_candidate']=native_plan['original_candidate']
                 record['finishing_overrides']=c.get('finishing_overrides',{})
+                if native_plan.get('appearance_colour_adjustment'):
+                    record['appearance_colour_adjustment']=native_plan['appearance_colour_adjustment']
+                    record['appearance_only']=True
+                    record['illumination_colour_separate']=True
             if response_enabled:
                 record['receiver_response_provenance_sha256']=sha(root/'response/result.json')
                 record['direct_indirect_inputs']='derived measured receiver response; native transport masters preserved'

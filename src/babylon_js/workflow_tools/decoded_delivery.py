@@ -1,5 +1,6 @@
 """Offline compressed delivery diagnostics and disposable matched diffuse views."""
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -8,6 +9,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+import types
 from importlib.util import spec_from_file_location,module_from_spec
 import numpy as np
 
@@ -360,9 +362,324 @@ def load_contract(path):
 def _process_options():return {'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}
 
 
+def _volume_contract_helpers():
+    """Load the existing pure volume contract without importing the bpy add-on."""
+    name='_bjs_decoded_volume_'+hashlib.sha256(str(HERE.parent.resolve()).encode()).hexdigest()[:12]
+    if name not in sys.modules:
+        package=types.ModuleType(name);package.__path__=[str(HERE.parent)];sys.modules[name]=package
+    def load(suffix,path):
+        key=name+'.'+suffix
+        if key not in sys.modules:
+            spec=spec_from_file_location(key,path);module=module_from_spec(spec)
+            sys.modules[key]=module;spec.loader.exec_module(module)
+        return sys.modules[key]
+    return (load('environment_lighting_volume',HERE.parent/'environment_lighting_volume.py'),
+            load('volume_relocation',HERE.parent/'environment_tools/volume_relocation.py'))
+
+
+def _volume_oiio_pixels(path,oiio,data_type):
+    """Raw ImageInput scanlines: no color transform, alpha association or flip."""
+    config=oiio.ImageSpec()
+    config.attribute('oiio:UnassociatedAlpha',1)
+    config.attribute('oiio:reorient',0)
+    config.attribute('oiio:RawColor',1)
+    reader=oiio.ImageInput.open(str(path),config)
+    if reader is None:raise ValueError('Cannot open native volume image: '+str(path))
+    try:
+        spec=reader.spec();names=list(spec.channelnames)
+        if (spec.depth!=1 or spec.x!=0 or spec.y!=0 or spec.z!=0
+                or spec.full_width!=spec.width or spec.full_height!=spec.height):
+            raise ValueError('Volume image must have one complete uncropped top-left data window')
+        pixels=reader.read_image(data_type)
+        if pixels is None:raise ValueError('Cannot read native volume image: '+str(path))
+        array=np.asarray(pixels)
+        if array.shape!=(spec.height,spec.width,spec.nchannels):raise ValueError('Native volume image dimensions/channels differ')
+        return array,names
+    finally:reader.close()
+
+
+def volume_linear(path):
+    """Volume-only EXR reader, named native RGB to finite float32, top row first."""
+    path=Path(path)
+    with path.open('rb') as stream:magic=stream.read(4)
+    if path.suffix.lower()!='.exr' or magic!=b'\x76\x2f\x31\x01':
+        raise ValueError('Volume master requires an actual OpenEXR file')
+    try:import OpenImageIO as oiio
+    except ImportError:array=np.asarray(_linear(path)[...,:3],dtype=np.float32)
+    else:
+        pixels,names=_volume_oiio_pixels(path,oiio,oiio.FLOAT)
+        if any(names.count(name)!=1 for name in ('R','G','B')):
+            raise ValueError('Volume EXR requires unique native R/G/B channel names')
+        if pixels.dtype!=np.float32:raise ValueError('Native volume EXR read must return float32')
+        array=pixels[...,[names.index(name) for name in ('R','G','B')]]
+    if array.ndim!=3 or array.shape[-1]!=3 or not np.isfinite(array).all() or (array<0).any():
+        raise ValueError('Volume EXR must contain finite nonnegative linear RGB')
+    return np.ascontiguousarray(array,dtype=np.float32)
+
+
+def volume_png_rgba(path):
+    """Volume-only PNG8 reader; straight raw RGBD bytes, never premultiplied."""
+    path=Path(path)
+    with path.open('rb') as stream:header=stream.read(29)
+    if len(header)!=29 or not header.startswith(b'\x89PNG\r\n\x1a\n') or header[24:26]!=b'\x08\x06':
+        raise ValueError('Volume preparation must retain actual PNG8 RGBA channels')
+    try:import OpenImageIO as oiio
+    except ImportError:array=png_rgba(path)
+    else:
+        pixels,names=_volume_oiio_pixels(path,oiio,oiio.UINT8)
+        if sorted(names)!=['A','B','G','R']:raise ValueError('Volume PNG requires exactly native RGBA channels')
+        array=pixels[...,[names.index(name) for name in ('R','G','B','A')]]
+    if array.dtype!=np.uint8 or array.ndim!=3 or array.shape[-1]!=4:
+        raise ValueError('Native volume preparation read must return RGBA8 bytes')
+    return np.ascontiguousarray(array)
+
+
+def volume_model_contract(model,receipt,simple_sha,simple_divisor,advanced_sha,advanced_divisor):
+    """Exact native Simple+Advanced payload on the one existing empty hasenv mesh."""
+    volume,_=_volume_contract_helpers()
+    volume.validate_record(receipt)
+    if 'advanced' not in receipt:raise ValueError('Paired volume validation requires Simple and Advanced capture records')
+    associations=[(kind,node) for kind in ('meshes','transformNodes') for node in model.get(kind,[])
+                  if volume.KEY in node.get('metadata',{})]
+    if (volume.KEY in model.get('metadata',{}) or len(associations)!=1
+            or associations[0][0]!='meshes' or associations[0][1].get('name','').lower()!='hasenv'):
+        raise ValueError('Volume metadata must occur only on the existing empty hasenv mesh')
+    node=associations[0][1];actual=node['metadata'][volume.KEY]
+    probe=copy.deepcopy(model)
+    for mesh in probe.get('meshes',[]):
+        if mesh.get('name','').lower()=='hasenv':mesh.get('metadata',{}).pop(volume.KEY,None)
+    volume.marker_metadata(probe)
+    expected=volume.payload(receipt,simple_sha,simple_divisor,1)
+    expected['advanced']=volume.advanced_payload(receipt['advanced'],advanced_sha,advanced_divisor)
+    # Canonical JSON also rejects bool-for-number substitutions and NaN metadata.
+    if json.dumps(actual,sort_keys=True,allow_nan=False)!=json.dumps(expected,sort_keys=True,allow_nan=False):
+        raise ValueError('Actual hasenv volume metadata differs from native capture/texture/divisor contract')
+    return {'marker':node['name'],'metadata':actual,'bounds':receipt['bounds'],
+            'dimensions':list(volume.DIMENSIONS),'direction_order':list(volume.DIRECTION_ORDER)}
+
+
+def volume_rgbd_comparison(decoded,prepared,master,min_divisor,advanced,thresholds):
+    """All atlas texels; Advanced checks effective alpha, not raw-alpha constancy."""
+    names=('linear_vs_master','codec_vs_prepared','preparation_vs_master')
+    if (not isinstance(thresholds,dict) or set(thresholds)!=set(names)
+            or any(not isinstance(limits,dict) or set(limits)!={'mean','p95','maximum'} for limits in thresholds.values())):
+        raise ValueError('Explicit mean/p95/maximum thresholds required for all three volume error comparisons')
+    for limits in thresholds.values():
+        for value in limits.values():
+            if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<0:
+                raise ValueError('Volume round-trip thresholds must be finite nonnegative numbers')
+    dimensions=(768,128) if advanced else (128,128)
+    if (decoded.shape!=dimensions+(4,) or prepared.shape!=decoded.shape
+            or master.shape!=dimensions+(3,) or not np.isfinite(master).all() or (master<0).any()):
+        raise ValueError('Volume comparison requires matching finite nonnegative native atlas dimensions')
+    actual=rgbd_decode(decoded,min_divisor);reference=rgbd_decode(prepared,min_divisor)
+    alpha=decoded[...,3].astype(np.float64)/255
+    intended=prepared[...,3].astype(np.float64)/255
+    bound=float(prepared[...,3].min())/255
+    if not math.isclose(min_divisor,bound,rel_tol=0,abs_tol=1e-12):
+        raise ValueError('Volume model minDivisor differs from actual retained preparation minimum')
+    effective=np.maximum(alpha,min_divisor)
+    under=np.maximum(intended-alpha,0);over=np.maximum(alpha-intended,0)
+    result={'decode':'pow(encodedRGB,2.2)/max(decodedAlpha,model.minDivisor); RGBA8 UNORM, no hardware sRGB decode',
+        'minimum_divisor':min_divisor,'intended_divisor_range':[float(intended.min()),float(intended.max())],
+        'decoded_alpha_range':[float(alpha.min()),float(alpha.max())],
+        'effective_divisor_range':[float(effective.min()),float(effective.max())],
+        'below_floor_pixels':int(np.count_nonzero(alpha<min_divisor)),
+        'maximum_floor_undershoot':float(np.maximum(min_divisor-alpha,0).max()),
+        'per_texel_divisor_undershoot_pixels':int(np.count_nonzero(under)),
+        'maximum_per_texel_divisor_undershoot':float(under.max()),
+        'per_texel_divisor_overshoot_pixels':int(np.count_nonzero(over)),
+        'maximum_per_texel_divisor_overshoot':float(over.max()),
+        'master_peak':float(master.max()),'decoded_peak':float(actual.max()),'thresholds':copy.deepcopy(thresholds),'failures':[]}
+    if advanced:
+        if not np.all(prepared[...,3]==prepared[0,0,3]):raise ValueError('Advanced preparation must use one quantized global divisor')
+        overshoot=np.maximum(alpha-bound,0)
+        result.update(intended_global_divisor_byte=int(prepared[0,0,3]),intended_global_divisor=bound,
+            decoded_alpha_overshoot_pixels=int(np.count_nonzero(overshoot)),maximum_decoded_alpha_overshoot=float(overshoot.max()),
+            effective_divisor_max_error=float(np.max(np.abs(effective-bound))),effective_divisor_tolerance=1e-12,
+            raw_alpha_constant=bool(np.all(decoded[...,3]==decoded[0,0,3])))
+        if np.any(overshoot):result['failures'].append('Advanced decoded alpha exceeds intended global divisor')
+        if result['effective_divisor_max_error']>1e-12:result['failures'].append('Advanced effective divisor is not constant at intended D')
+    arrays={'linear_vs_master':np.abs(actual-master),'codec_vs_prepared':np.abs(actual-reference),
+            'preparation_vs_master':np.abs(reference-master)}
+    result['errors']={name:metrics(error) for name,error in arrays.items()}
+    def check(label,values):
+        for name,measured in values.items():
+            for metric,value in measured.items():
+                if value>thresholds[name][metric]:result['failures'].append(label+name+'.'+metric+' exceeds selected threshold')
+    check('',result['errors'])
+    if advanced:
+        volume,_=_volume_contract_helpers();result['banks']=[]
+        for index,direction in enumerate(volume.DIRECTION_ORDER):
+            values={name:metrics(error[index*128:(index+1)*128]) for name,error in arrays.items()}
+            result['banks'].append({'direction':direction,'rows':[index*128,(index+1)*128],'errors':values})
+            check(direction+': ',values)
+    result['status']='failed' if result['failures'] else 'passed'
+    return result
+
+
+def _volume_encoder_policy(row,prepared,compressed):
+    """Quality/Zstd are sealed encoder-receipt proof, not inferred binary fields."""
+    command=row.get('command')
+    prefix=['create','--format','R8G8B8A8_UNORM','--assign-oetf','linear','--encode','uastc','--threads']
+    if (not isinstance(command,list) or len(command)!=16 or not all(isinstance(value,str) for value in command)
+            or command[1:9]!=prefix or not command[9].isdigit() or not 1<=int(command[9])<=1024
+            or command[10:14]!=['--uastc-quality','4','--zstd','3']
+            or Path(command[-2]).name!=prepared.name or Path(command[-1]).name!=compressed.name):
+        raise ValueError('Retained volume encoder command must declare RGBA8 UNORM/linear/UASTC4/Zstd3 with no mipmaps')
+    return {'proof':'Hash-bound retained exporter command, not quality-level inference from KTX binary',
+        'command':command,'format':'R8G8B8A8_UNORM','assign_oetf':'linear','codec':'uastc',
+        'uastc_quality':4,'zstd':3,'mipmaps':False,'flip_y':False,'alpha':'preserve'}
+
+
+def validate_volumes(recipe_path,output,ktx):
+    """Offline paired volume decode; source/capture/export proofs, never runtime."""
+    recipe_path=Path(recipe_path).resolve();recipe=read_json(recipe_path);base=recipe_path.parent
+    required={'schema_version','kind','model','conversion_report','receipt','capture_config','capture_inputs',
+              'source_blend','world_image','volumes','thresholds'}
+    if (not isinstance(recipe,dict) or set(recipe)!=required or type(recipe['schema_version']) is not int or recipe['schema_version']!=1
+            or recipe['kind']!='decoded-volume-delivery' or not isinstance(recipe['volumes'],dict)
+            or set(recipe['volumes'])!={'simple','advanced'} or not isinstance(recipe['thresholds'],dict)
+            or set(recipe['thresholds'])!={'simple','advanced'}):
+        raise ValueError('Expected explicit paired decoded-volume-delivery schema1 recipe')
+    output=Path(output).resolve()
+    if output.exists():raise ValueError('Use a new volume validation output directory')
+    ktx=Path(ktx).resolve();inputs={str(recipe_path):sha(recipe_path),str(ktx):sha(ktx)}
+    def remember(path,digest):
+        path=Path(path).resolve()
+        if not isinstance(digest,str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest):
+            raise ValueError('Explicit lowercase SHA256 required for every volume input')
+        actual=sha(path)
+        if actual!=digest:raise ValueError('Volume input differs from sealed SHA256: '+str(path))
+        inputs[str(path)]=actual;return path
+    def artifact(value):
+        if not isinstance(value,dict) or set(value)!={'path','sha256'} or not isinstance(value['path'],str) or not value['path']:
+            raise ValueError('Volume artifact requires exactly path and sha256')
+        return remember(base/value['path'],value['sha256'])
+    paths={name:artifact(recipe[name]) for name in ('model','conversion_report','receipt','capture_config','capture_inputs','source_blend','world_image')}
+    model=read_json(paths['model']);report=read_json(paths['conversion_report']);receipt=read_json(paths['receipt'])
+    volume,relocation=_volume_contract_helpers();volume.validate_record(receipt)
+    if 'advanced' not in receipt:raise ValueError('Volume validation requires both native Simple and Advanced companions')
+    if report.get('status')!='passed':raise ValueError('Volume conversion report must have passed')
+    delivered=[row for row in report.get('delivery_files',[]) if Path(row['path']).name==paths['model'].name]
+    if len(delivered)!=1 or delivered[0].get('sha256')!=sha(paths['model']):raise ValueError('Actual model differs from final conversion delivery proof')
+    source=relocation.package_paths(receipt,paths['receipt']);historical_source=receipt['source']
+    if receipt.get('pathBase')=='receipt':
+        lineage=receipt.get('relocation',{})
+        original_path=remember(paths['receipt'].parent/lineage['originalReceipt'],lineage['originalReceiptSha256'])
+        proof_path=remember(paths['receipt'].parent/lineage['proof'],lineage['proofSha256'])
+        original=read_json(original_path);proof=read_json(proof_path);expected=copy.deepcopy(original)
+        expected['source']=receipt['source']
+        for name in ('pathBase','packageRoot','relocation'):expected[name]=receipt[name]
+        if (lineage.get('version')!=1 or expected!=receipt or proof.get('version')!=1
+                or proof.get('originalReceiptSha256')!=sha(original_path)
+                or proof.get('originalSourceSha256')!=original['source']['sceneSha256']
+                or proof.get('sourceSha256')!=source['sceneSha256']):
+            raise ValueError('Portable volume historical/source lineage differs')
+        historical_source=original['source']
+    for name in ('scene','scopeRecipe','combined','combinedProvenance','reference'):
+        remember(source[name],source[name+'Sha256'])
+    if paths['source_blend']!=Path(source['scene']).resolve():raise ValueError('Volume source blend association differs')
+    if sha(paths['world_image'])!=source['worldImageSha256']:raise ValueError('Volume physical World image hash differs')
+    signature=read_json(paths['capture_inputs'])
+    if signature.get('source')!=historical_source or signature.get('configSha256')!=sha(paths['capture_config']):
+        raise ValueError('Capture signature/config/source association differs')
+    advanced=receipt['advanced'];provenance_path=remember(paths['receipt'].parent/advanced['provenance'],advanced['provenanceSha256'])
+    provenance=read_json(provenance_path)
+    if (provenance.get('source')!=historical_source or provenance.get('acceptedCaptureInputsSha256')!=sha(paths['capture_inputs'])
+            or provenance.get('directionOrder')!=volume.DIRECTION_ORDER
+            or provenance.get('panoramaConvention')!=volume.PANORAMA_CONVENTION
+            or provenance.get('cameraEulerBlender')!=[math.pi/2,0,0]):
+        raise ValueError('Advanced capture provenance source/bank/orientation differs')
+    if 'calibration' in provenance or 'calibrationSha256' in provenance:
+        filename=provenance.get('calibration','')
+        if not filename or Path(filename).name!=filename:raise ValueError('Native orientation calibration must be beside provenance')
+        calibration=read_json(remember(provenance_path.parent/filename,provenance.get('calibrationSha256')))
+        if (calibration.get('status')!='passed' or calibration.get('panoramaConvention')!=volume.PANORAMA_CONVENTION
+                or calibration.get('directionOrder')!=volume.DIRECTION_ORDER
+                or calibration.get('cameraEulerBlender')!=[math.pi/2,0,0]
+                or [row.get('direction') for row in calibration.get('samples',[])]!=volume.DIRECTION_ORDER
+                or not all(row.get('passed') is True for row in calibration['samples'])):
+            raise ValueError('Retained native six-axis panorama calibration differs')
+    exported=report.get('environment_lighting_volume',{})
+    if Path(exported.get('receipt','')).resolve()!=paths['receipt']:raise ValueError('Export report volume receipt association differs')
+    items={};divisors={};rows={};profiles={};policies={};masters={};preparations={}
+    for name,dimensions,capture,filename in (('simple',[128,128],receipt,volume.FILENAME),
+                                           ('advanced',[128,768],advanced,volume.ADVANCED_FILENAME)):
+        item=recipe['volumes'][name]
+        if not isinstance(item,dict) or set(item)!={'ktx','master','prepared','image_origin'} or item['image_origin']!='top-left':
+            raise ValueError('Volume item requires actual KTX/master/prepared artifacts and top-left image_origin')
+        files={key:artifact(item[key]) for key in ('ktx','master','prepared')};items[name]=files
+        if files['ktx'].name!=filename or files['master'].suffix.lower()!='.exr':raise ValueError('Native volume filename and actual EXR master required')
+        if (files['master']!=(paths['receipt'].parent/capture['master']).resolve()
+                or sha(files['master'])!=capture['masterSha256']):raise ValueError('Volume master differs from capture receipt')
+        row=exported if name=='simple' else exported.get('advanced',{});rows[name]=row
+        metrics_row=row.get('metrics',{})
+        if (row.get('status')!='passed' or row.get('texture')!=filename or row.get('textureSha256')!=sha(files['ktx'])
+                or metrics_row.get('source_sha256')!=sha(files['master'])
+                or metrics_row.get('prepared_sha256')!=sha(files['prepared'])
+                or metrics_row.get('dimensions')!=dimensions or metrics_row.get('source_dimensions')!=dimensions
+                or metrics_row.get('channels')!=4):raise ValueError('Volume exporter preparation/delivery proof differs')
+        if Path(row.get('source','')).name!=files['master'].name or Path(metrics_row.get('prepared','')).name!=files['prepared'].name:
+            raise ValueError('Retained volume preparation filenames differ from conversion record')
+        prepared=volume_png_rgba(files['prepared']);master=volume_linear(files['master'])
+        if master.shape!=(dimensions[1],dimensions[0],3) or prepared.shape!=(dimensions[1],dimensions[0],4):
+            raise ValueError('Native volume master/prepared dimensions differ')
+        expected,encoding=core.encode_rgbd(master,fixed_divisor=name=='advanced')
+        if not np.array_equal(prepared,expected):raise ValueError('Retained volume preparation differs from canonical unflipped RGBD encoding of exact EXR')
+        for key in ('alpha_min','alpha_max','rgbd_encoded_divisor_mode','rgbd_image_divisor','rgbd_image_divisor_byte'):
+            if metrics_row.get(key)!=encoding[key]:raise ValueError('Volume recorded divisor/preparation metric differs: '+key)
+        if name=='advanced' and metrics_row.get('rgbd_divisor_mode')!='global-fixed':raise ValueError('Advanced conversion must explicitly record global-fixed divisor')
+        divisors[name]=float(prepared[...,3].min())/255;masters[name]=master;preparations[name]=prepared
+        policies[name]=_volume_encoder_policy(row,files['prepared'],files['ktx'])
+        profiles[name]=inspect_ktx2(files['ktx'],'rgbd',dimensions,False,codec='uastc')
+    model_info=volume_model_contract(model,receipt,sha(items['simple']['ktx']),divisors['simple'],
+                                     sha(items['advanced']['ktx']),divisors['advanced'])
+    version=subprocess.run([str(ktx),'--version'],capture_output=True,text=True,check=True,**_process_options()).stdout.strip()
+    if '4.4.2' not in version:raise ValueError('Explicit KTX-Software4.4.2 required for official validation/extraction')
+    output.mkdir(parents=True);records={};generated={}
+    for name in ('simple','advanced'):
+        files=items[name];width,height=profiles[name]['dimensions'];raw=output/(name+'.rgba')
+        official=[[str(ktx),'validate',str(files['ktx'])],
+                  [str(ktx),'extract','--transcode','rgba8','--level','0','--raw',str(files['ktx']),str(raw)]]
+        logs=[]
+        for command in official:
+            completed=subprocess.run(command,capture_output=True,text=True,check=True,**_process_options())
+            logs.append({'command':command,'returncode':completed.returncode,'stdout':completed.stdout,'stderr':completed.stderr})
+        if raw.stat().st_size!=width*height*4:raise ValueError('Actual decompressed volume RGBA8 byte count differs')
+        decoded=np.fromfile(raw,dtype=np.uint8).reshape(height,width,4)
+        comparison=volume_rgbd_comparison(decoded,preparations[name],masters[name],divisors[name],name=='advanced',recipe['thresholds'][name])
+        linear=output/(name+'_decoded_linear.npy');np.save(linear,rgbd_decode(decoded,divisors[name]),allow_pickle=False)
+        generated.update({str(raw):sha(raw),str(linear):sha(linear)})
+        records[name]={'files':{key:{'path':str(path),'sha256':sha(path)} for key,path in files.items()},
+            'container_profile':profiles[name],'encoder_policy_receipt':policies[name],'official_operations':logs,
+            'raw':str(raw),'raw_sha256':sha(raw),'decoded_linear':str(linear),'decoded_linear_sha256':sha(linear),
+            'image_origin':'top-left; retained flip_y=false and rd container; no similarity-selected flip',
+            'comparison':comparison}
+    for tool in (Path(__file__),HERE.parent/'ktx_conversion.py',HERE.parent/'environment_lighting_volume.py',
+                 HERE.parent/'spatial_lighting.py',HERE.parent/'environment_tools/volume_relocation.py'):
+        inputs[str(tool.resolve())]=sha(tool)
+    for path,digest in inputs.items():
+        if sha(path)!=digest:raise ValueError('Volume input changed during validation: '+path)
+    failures=[name+': '+failure for name,row in records.items() for failure in row['comparison']['failures']]
+    result={'schema_version':1,'kind':'decoded-volume-delivery-validation','status':'failed' if failures else 'passed',
+        'model':str(paths['model']),'model_sha256':sha(paths['model']),'source_sha256':sha(paths['source_blend']),
+        'receipt_sha256':sha(paths['receipt']),'model_contract':model_info,'volumes':records,'failures':failures,
+        'inputs':inputs,'generated':generated,'ktx_version':version,'thresholds':recipe['thresholds'],
+        'image_reader':{'backend':'OpenImageIO.ImageInput' if sys.modules.get('OpenImageIO') else 'existing _linear/png_rgba fallback',
+            'oiio_version':str(getattr(sys.modules.get('OpenImageIO'),'VERSION_STRING','unavailable')),
+            'exr':'named native RGB float32, top-left rows; no color transform',
+            'png':'raw straight RGBA8 divisor bytes; oiio:UnassociatedAlpha=1, reorient=0, RawColor=1 when OIIO is available'},
+        'limits':'Offline base-level texel/profile/provenance checks only. Encoder quality/Zstd are retained-command receipt proof, not inferred from binary. No Blender capture reevaluation, browser or KaDshow runtime/normal/bounds/sampling/visual acceptance claim.'}
+    save(output/'volume-delivery-validation.json',result)
+    if failures:raise ValueError('Decoded volume validation failed: '+'; '.join(failures))
+    return result
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest='command',required=True)
     validate=sub.add_parser('validate');validate.add_argument('--recipe',required=True,type=Path);validate.add_argument('--output',required=True,type=Path);validate.add_argument('--ktx',required=True,type=Path)
+    volumes=sub.add_parser('validate-volumes');volumes.add_argument('--recipe',required=True,type=Path);volumes.add_argument('--output',required=True,type=Path);volumes.add_argument('--ktx',required=True,type=Path)
     views=sub.add_parser('render-views');views.add_argument('--config',required=True,type=Path);views.add_argument('--candidate',required=True,type=Path);views.add_argument('--output',required=True,type=Path);views.add_argument('--blender',required=True,type=Path)
     volume=sub.add_parser('audit-volumes');volume.add_argument('--recipe',required=True,type=Path);volume.add_argument('--output',required=True,type=Path);volume.add_argument('--ktx',required=True,type=Path)
     args=parser.parse_args()
@@ -370,6 +687,7 @@ def main():
         from volume_audit import audit
         audit(args.recipe,args.output,args.ktx)
     elif args.command=='validate':validate_delivery(args.recipe,args.output,args.ktx)
+    elif args.command=='validate-volumes':validate_volumes(args.recipe,args.output,args.ktx)
     else:
         output=args.output.resolve()
         if output.exists():raise ValueError('Use a new delivery view output directory')

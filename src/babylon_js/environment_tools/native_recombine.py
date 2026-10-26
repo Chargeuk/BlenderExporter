@@ -12,6 +12,126 @@ RANGES={'Direct Strength':(0,100),'Indirect Strength':(0,100),'Shadow Lift':(0,1
         'AO Strength':(0,1),'AO Contrast':(.05,4),'AO Direct Influence':(0,1),'AO Indirect Influence':(0,1),COLOUR_STRENGTH:(0,1)}
 FLAGS={'reuse_lightmaps','recombine','rebake_ao','env_converter'}
 
+APPEARANCE='appearance_colour_adjustment'
+APPEARANCE_COPY='appearance/colour_adjustment.png'
+
+
+def appearance_settings(c):
+    """An appearance-only map is not a physical/source_images transport input."""
+    if APPEARANCE not in c:return None
+    settings=c[APPEARANCE]
+    if not isinstance(settings,dict) or type(settings.get('schema_version')) is not int or settings['schema_version']!=1 or type(settings.get('enabled')) is not bool:
+        raise ValueError('appearance_colour_adjustment requires schema1 and boolean enabled')
+    if not settings['enabled']:
+        if set(settings)!={'schema_version','enabled'}:raise ValueError('Disabled appearance map must not carry active settings')
+        return None
+    required={'schema_version','enabled','image','sha256','size','colour_space','alpha_mode','strength','uv','uv_index','geometry_sha256'}
+    if set(settings)!=required:raise ValueError('Appearance map requires exact image/hash/512/interpretation/strength/UV2/geometry declaration')
+    for key in ('sha256','geometry_sha256'):
+        value=settings[key]
+        if not isinstance(value,str) or len(value)!=64 or any(x not in '0123456789abcdef' for x in value):
+            raise ValueError('Invalid appearance '+key)
+    if type(settings['size']) is not int or settings['size']!=512 or settings['colour_space']!='sRGB' or settings['alpha_mode']!='CHANNEL_PACKED':
+        raise ValueError('Appearance map must be 512 sRGB CHANNEL_PACKED')
+    strength=settings['strength']
+    if isinstance(strength,bool) or not isinstance(strength,(int,float)) or not math.isfinite(strength) or not 0<=strength<=1:
+        raise ValueError('Invalid appearance strength')
+    if not isinstance(settings['uv'],str) or not settings['uv'] or settings['uv']!=c.get('uv','SimpleBake') or type(settings['uv_index']) is not int or settings['uv_index']!=1:
+        raise ValueError('Appearance map requires exact native UV2 name/index1')
+    if c.get('physical_colour_adjustment',{}).get('enabled') or COLOUR_STRENGTH in c.get('finishing_overrides',{}):
+        raise ValueError('A new appearance map cannot stack with physical tint or a colour-strength override')
+    if not isinstance(settings['image'],str) or not settings['image']:raise ValueError('Appearance map requires a saved PNG path')
+    path=(Path(c['_root'])/settings['image']).resolve()
+    if path in {(Path(c['_root'])/p).resolve() for p in c.get('source_images',[])}:
+        raise ValueError('Appearance map must remain outside physical source_images')
+    if not path.is_file() or sha(path)!=settings['sha256']:raise ValueError('Appearance map hash is stale')
+    # Header validation works in the ordinary CLI without importing Blender/Pillow.
+    # A fresh Blender load/read_codes below additionally validates the actual pixels.
+    import struct,zlib
+    data=path.read_bytes()
+    if (len(data)<33 or data[:8]!=b'\x89PNG\r\n\x1a\n' or data[8:16]!=b'\x00\x00\x00\rIHDR'
+            or struct.unpack('>I',data[29:33])[0]!=(zlib.crc32(data[12:29])&0xffffffff)):
+        raise ValueError('Appearance image is not a valid RGBA8 PNG header')
+    if struct.unpack('>IIBBBBB',data[16:29])!=(512,512,8,6,0,0,0):
+        raise ValueError('Appearance image must be 512x512 RGBA8 PNG')
+    return dict(settings,image=str(path),strength=float(strength))
+
+
+def restore_appearance(c):
+    """Discard only helper-owned disposable graph/image copies, never saved inputs."""
+    state=c.pop('_appearance_runtime',None)
+    if state is None:return
+    import bpy
+    from appearance import preview_identity
+    c['preview_material']=state['original_material'].name
+    if state['association'] is None:bpy.context.scene.pop('bjs_lighting_controls_material',None)
+    else:bpy.context.scene['bjs_lighting_controls_material']=state['association']
+    bpy.data.materials.remove(state['material'])
+    pending=list(state['groups'])
+    while pending:
+        removable=[tree for tree in pending if tree.users==0]
+        if not removable:raise RuntimeError('Disposable appearance groups retained unexpected users')
+        for tree in removable:bpy.data.node_groups.remove(tree);pending.remove(tree)
+    for image in state['images']:bpy.data.images.remove(image)
+    if preview_identity(state['original_material'])!=state['original_preview_sha256']:
+        raise RuntimeError('Appearance application changed original managed preview')
+
+
+def _apply_appearance(c,settings):
+    """Attach exactly once on a deep clone in a disposable background process."""
+    import bpy
+    from babylon_js import colour_adjustment as ca
+    from appearance import preview_identity
+    from ao import geometry_identity
+    from worker import clone_tree,select
+    existing=c.get('_appearance_runtime')
+    if existing is not None:
+        active=ca.settings(bpy.context.scene)
+        if (existing['settings']!=settings or c['preview_material']!=existing['material'].name or not active
+                or active['strength']!=settings['strength'] or sha(bpy.path.abspath(active['image'].filepath))!=settings['sha256']):
+            raise ValueError('Repeated appearance application differs; stacking is forbidden')
+        return existing['record']
+    if geometry_identity(c)['geometry_sha256']!=settings['geometry_sha256']:
+        raise ValueError('Appearance geometry/UV2 identity is stale')
+    receivers=select(c,'receivers')
+    if not receivers or any(len(o.data.uv_layers)<=1 or o.data.uv_layers[1].name!=settings['uv'] for o in receivers):
+        raise ValueError('Appearance receivers must retain configured native UV at index1')
+    original=bpy.data.materials.get(c.get('preview_material',''))
+    if original is None or bpy.context.scene.get('bjs_lighting_controls_material')!=original.name or ca.settings(bpy.context.scene) is not None:
+        raise ValueError('New appearance map requires the original managed preview with no existing overlay')
+    groups_before=set(bpy.data.node_groups);images_before=set(bpy.data.images)
+    clone=original.copy();clone.use_fake_user=False;state={'original_material':original,'material':clone,'association':bpy.context.scene.get('bjs_lighting_controls_material'),
+        'original_preview_sha256':preview_identity(original),'groups':[],'images':[],'settings':settings}
+    c['_appearance_runtime']=state
+    try:
+        for node in clone.node_tree.nodes:
+            if node.type=='GROUP' and node.node_tree:node.node_tree=clone_tree(node.node_tree)
+        for tree in bpy.data.node_groups:
+            if tree not in groups_before:tree.use_fake_user=False
+        c['preview_material']=clone.name;bpy.context.scene['bjs_lighting_controls_material']=clone.name
+        path=Path(settings['image']);copied=Path(c.get('_candidate',c['_root']))/APPEARANCE_COPY
+        if copied.exists():
+            if sha(copied)!=settings['sha256']:raise ValueError('Copied appearance map changed')
+            path=copied
+        image=ca.load_image(path);codes=ca.read_codes(image)
+        if (tuple(image.size)!=(512,512) or image.colorspace_settings.name!='sRGB' or image.alpha_mode!='CHANNEL_PACKED'
+                or codes.shape!=(512,512,4)):
+            raise ValueError('Actual loaded appearance interpretation/dimensions differ')
+        ca.attach(bpy.context.scene,image,uv=settings['uv'],strength=settings['strength'])
+        state['record']={'schema_version':1,'kind':'disposable-native-appearance-only','image':str(path),'image_sha256':settings['sha256'],
+            'geometry_sha256':settings['geometry_sha256'],'uv':settings['uv'],'uv_index':1,'size':512,'colour_space':'sRGB',
+            'alpha_mode':'CHANNEL_PACKED','encoding':ca.ENCODING,'strength':settings['strength'],'applications':1,
+            'physical_source_unchanged':True,'source_saved':False,'illumination':'Existing white-albedo evaluator bypasses this layer; it remains albedo only'}
+        return state['record']
+    except Exception:
+        state['groups']=[tree for tree in bpy.data.node_groups if tree not in groups_before]
+        state['images']=[image for image in bpy.data.images if image not in images_before]
+        restore_appearance(c);raise
+    finally:
+        if '_appearance_runtime' in c:
+            state['groups']=[tree for tree in bpy.data.node_groups if tree not in groups_before]
+            state['images']=[image for image in bpy.data.images if image not in images_before]
+
 
 def finishing_overrides(c):
     values=c.get('finishing_overrides',{})
@@ -29,17 +149,17 @@ def finishing_overrides(c):
 
 
 def apply_finishing(c):
-    """Only in disposable workers, after relink/resolution check; never save the source."""
-    values=finishing_overrides(c)
-    if not values:return None
+    """Only disposable managed preview changes; physical/source files remain exact."""
+    values=finishing_overrides(c);appearance=appearance_settings(c)
+    if not values and appearance is None:return None
     import bpy
     if not bpy.app.background:raise RuntimeError('Finishing overrides require disposable background Blender')
+    appearance_record=_apply_appearance(c,appearance) if appearance else None
     material=bpy.data.materials.get(c.get('preview_material',''))
     if not material or not material.use_nodes:raise ValueError('Missing managed finishing preview material')
     nodes=[node for node in material.node_tree.nodes if node.type=='GROUP' and node.get('bjs_lighting_controls')==1]
     if len(nodes)!=1:raise ValueError('Finishing overrides require exactly one managed lighting control node')
-    node=nodes[0]
-    colour=None
+    node=nodes[0];colour=None
     if COLOUR_STRENGTH in values:
         from babylon_js import colour_adjustment as ca
         colour=ca.settings(bpy.context.scene)
@@ -53,15 +173,15 @@ def apply_finishing(c):
             raise ValueError('Finishing socket is missing, linked or nonscalar: '+name)
     records={}
     for name,value in values.items():
-        socket=node.inputs[name];before=float(socket.default_value);socket.default_value=value
-        effective=float(socket.default_value)
+        socket=node.inputs[name];before=float(socket.default_value);socket.default_value=value;effective=float(socket.default_value)
         if not math.isfinite(effective) or not math.isclose(effective,value,rel_tol=1e-6,abs_tol=1e-7):
             raise ValueError('Finishing socket clamped or changed requested value: '+name)
         records[name]={'before':before,'requested':value,'effective':effective}
-    return {'schema_version':1,'material':material.name,'node':node.name,'overrides':records,
-            'source_saved':False,'appearance_only_colour_diagnostic':colour is not None,
+    return {'schema_version':1,'material':material.name,'node':node.name,'overrides':records,'source_saved':False,
+            'appearance_only_colour_diagnostic':colour is not None or appearance is not None,
             'original_physical_colour_adjustment':c.get('physical_colour_adjustment') if colour is not None else None,
-            'scope':'Managed scalar finishing only. Colour strength override is preview-only evidence; changed intrinsic tint promotion requires fresh matching native transport/response. Physical source/World/tint image/curves/smoothing unchanged'}
+            'appearance_colour_adjustment':appearance_record,
+            'scope':'Managed finishing only. Appearance map is applied once to a disposable preview, never physical transport. Intrinsic physical tint still requires matching fresh transport/response.'}
 
 
 def _read(path):return json.loads(Path(path).read_text(encoding='utf8'))
@@ -94,7 +214,9 @@ def _tool_inventory(tool_root,required):
 
 def validate_original(c,original_root,tool_root,*,_patch_tool_provenance=None):
     """Read every original input/output before copying; retain the actual native owner labels."""
-    finishing_overrides(c)
+    finishing_overrides(c);appearance=appearance_settings(c)
+    if appearance and any((Path(original_root)/name).exists() for name in ('native_local_patch.provenance.json','native_recombine.provenance.json')):
+        raise ValueError('Appearance recombination requires a fresh native original; no patch/recombine chains')
     if (Path(original_root)/'native_local_patch.provenance.json').is_file():
         if _patch_tool_provenance:raise ValueError('Nested patch tool fallback is unsupported')
         from native_local_patch import validate_for_recombine
@@ -112,8 +234,10 @@ def validate_original(c,original_root,tool_root,*,_patch_tool_provenance=None):
     original_config_path=configs[0];original_config=_read(original_config_path)
     trial_config=_read(c['_config'])
     trial_config.pop('finishing_overrides',None)
+    trial_config.pop(APPEARANCE,None)
+    if APPEARANCE in original_config:raise ValueError('Original native recipe must not be an appearance derivative')
     if trial_config!=original_config:
-        raise ValueError('Native recombination permits only finishing_overrides; physical recipe fields changed')
+        raise ValueError('Native recombination permits only finishing_overrides/appearance_colour_adjustment; physical recipe fields changed')
     original_source=(original_config_path.parent/original_config['blend']).resolve()
     if sha(c['_source'])!=sha(original_source) or sha(original_source)!=native.get('source_sha256'):
         raise ValueError('Native recombination requires the exact immutable original saved source')
@@ -149,6 +273,9 @@ def validate_original(c,original_root,tool_root,*,_patch_tool_provenance=None):
             outputs[str(path)]=digest
     checked.update(outputs);checked[str(build_path)]=sha(build_path)
     catalogue=_read(original/'bake/islands.json');geometry_path=original/'geometry/result.json';geometry=_read(geometry_path)
+    if appearance:
+        if appearance['geometry_sha256']!=geometry['geometry_sha256']:raise ValueError('Appearance geometry/UV2 identity differs from native proof')
+        checked[appearance['image']]=appearance['sha256']
     expected={'schema_version':1,'method':'native-island-id','kind':'native-island-id-ownership',
         'source_sha256':sha(original_source),'config_sha256':sha(original_config_path),'scene':c.get('scene'),
         'size':c['size'],'uv':c.get('uv','SimpleBake'),'geometry_sha256':geometry['geometry_sha256'],
@@ -195,7 +322,7 @@ def validate_original(c,original_root,tool_root,*,_patch_tool_provenance=None):
     copies=['geometry/result.json','bake/islands.json','ownership/labels.npy','ownership/result.json']
     if response:copies+=['response/result.json']
     copies+=['masters/'+name for name in required_masters]
-    return {'schema_version':1,'kind':'exact-source-native-recombine','original_candidate':str(original),
+    result={'schema_version':1,'kind':'exact-source-native-recombine','original_candidate':str(original),
         'original_config':str(original_config_path),'original_config_sha256':sha(original_config_path),
         'source_sha256':native['source_sha256'],'scene':c.get('scene'),'size':c['size'],'uv':c.get('uv','SimpleBake'),
         'geometry_sha256':geometry['geometry_sha256'],'native_ownership_sha256':sha(native_path),
@@ -204,6 +331,12 @@ def validate_original(c,original_root,tool_root,*,_patch_tool_provenance=None):
         'appearance_only_colour_diagnostic':COLOUR_STRENGTH in finishing_overrides(c),
         'original_physical_colour_adjustment':original_config.get('physical_colour_adjustment'),
         'limits':'Measured transport/response/AO retained exactly. Seven finishing scalars plus explicitly appearance-only preview Colour Adjustment Strength may differ; changed intrinsic colour promotion requires fresh matching native transport/response. Native owner labels are never reconstructed from conservative footprints.'}
+    if appearance:
+        result[APPEARANCE]=appearance
+        result['appearance_copy']=APPEARANCE_COPY
+        result['appearance_only_colour_diagnostic']=True
+        result['limits']+=' New512RGBA colour is appearance-only; original physical source/config/native proof remain unchanged.'
+    return result
 
 
 def copy_verified(plan,root):
@@ -218,6 +351,13 @@ def copy_verified(plan,root):
         if destination.exists():
             if sha(destination)!=sha(source):raise ValueError('Retained recombine copy changed: '+relative)
         else:shutil.copyfile(source,destination)
+    if plan.get(APPEARANCE):
+        target=root/plan['appearance_copy'];target.parent.mkdir(parents=True,exist_ok=True)
+        source=Path(plan[APPEARANCE]['image'])
+        if sha(source)!=plan[APPEARANCE]['sha256']:raise ValueError('Appearance map changed before copying')
+        if target.exists() and sha(target)!=plan[APPEARANCE]['sha256']:raise ValueError('Existing appearance copy changed')
+        if not target.exists():shutil.copyfile(source,target)
+        if sha(target)!=plan[APPEARANCE]['sha256']:raise ValueError('Appearance copy differs')
     receipt=root/'native_recombine.provenance.json'
     if receipt.exists():
         if _read(receipt)!=plan:raise ValueError('Native recombine receipt changed')
@@ -229,6 +369,9 @@ def verify_copied(c,root):
     if (record.get('source_sha256')!=sha(c['_source']) or record.get('finishing_overrides')!=finishing_overrides(c)
             or record.get('size')!=c['size'] or record.get('uv')!=c.get('uv','SimpleBake') or record.get('scene')!=c.get('scene')):
         raise ValueError('Native recombine candidate source/settings identity differs')
+    if record.get(APPEARANCE)!=appearance_settings(c):raise ValueError('Native recombine appearance declaration differs')
+    if record.get(APPEARANCE) and (record.get('appearance_copy')!=APPEARANCE_COPY or sha(root/APPEARANCE_COPY)!=record[APPEARANCE]['sha256']):
+        raise ValueError('Retained appearance map differs')
     for path,digest in record['inputs'].items():
         if sha(path)!=digest:raise ValueError('Original native recombine input changed: '+path)
     for relative in record['copies']:
@@ -241,7 +384,7 @@ def _validate_patch_derived(c,root,tool_root):
     """One ordinary combined derivative of an immutable validated island assembly."""
     from native_local_patch import METHOD
     root=Path(root).resolve();record=_read(root/'native_recombine.provenance.json')
-    if record.get('assembly_kind')!=METHOD or finishing_overrides(c) or record.get('finishing_overrides'):
+    if record.get('assembly_kind')!=METHOD or finishing_overrides(c) or appearance_settings(c) or record.get('finishing_overrides'):
         raise ValueError('Only exact-source patch-derived candidates without finishing overrides are supported')
     original=Path(record['original_candidate']).resolve()
     if (original==root or original.is_relative_to(root) or root.is_relative_to(original)
@@ -265,3 +408,54 @@ def _validate_patch_derived(c,root,tool_root):
     return dict(expected,original_candidate=str(root),inputs=inputs,
         immutable_assembly_candidate=str(original),fresh_full_room_bake=False,
         limits=expected['limits']+' Combined finishing is an exact-source derivative of that immutable assembly.')
+
+
+def verify_derived(c,root,tool_root):
+    """Verify one complete appearance derivative against a fresh native original.
+
+    This public export gate never changes the source hash in native ownership and
+    never treats a copied ID mask as newly measured ownership.
+    """
+    root=Path(root).resolve();record=_read(root/'native_recombine.provenance.json')
+    if not appearance_settings(c) or not record.get(APPEARANCE) or record.get('assembly_kind'):
+        raise ValueError('Derived appearance verification requires one explicit appearance-map derivative')
+    original=Path(record['original_candidate']).resolve()
+    if (original==root or original.is_relative_to(root) or root.is_relative_to(original)
+            or (original/'native_recombine.provenance.json').exists()
+            or (original/'native_local_patch.provenance.json').exists()):
+        raise ValueError('Derived appearance must name one separate fresh native original; no chains')
+    verify_copied(c,root)
+    expected=validate_original(c,original,tool_root)
+    if record!=expected:raise ValueError('Derived appearance receipt differs from exact original native/map plan')
+    build_path=root/'build.json';build=_read(build_path)
+    if build.get('schema_version')!=1 or 'combine' not in build.get('stages',{}):
+        raise ValueError('Derived appearance combine has not completed')
+    if build.get('inputs',{}).get(str(Path(c['_config']).resolve()))!=sha(c['_config']) or build['inputs'].get(c['_source'])!=sha(c['_source']):
+        raise ValueError('Derived appearance source/config inputs differ')
+    inputs=dict(expected['inputs'])
+    for path,digest in build['inputs'].items():
+        if path in FLAGS:continue
+        if sha(path)!=digest:raise ValueError('Derived appearance input/tool changed: '+path)
+        inputs[path]=digest
+    outputs={}
+    for stage in build['stages'].values():
+        for relative,digest in stage['outputs'].items():
+            path=(root/relative.replace(chr(92),'/')).resolve()
+            if not path.is_relative_to(root) or sha(path)!=digest:raise ValueError('Derived appearance completed output changed: '+relative)
+            outputs[str(path)]=digest
+    combined=root/'masters/combined.exr';sidecar=root/'masters/combined.provenance.json';appearance=_read(sidecar)
+    if not {str(combined),str(sidecar)}<=set(outputs):raise ValueError('Derived combined master/provenance lack completed-output proof')
+    required={'schema_version':1,'source_sha256':sha(c['_source']),'combined_sha256':sha(combined),
+        'ownership_sha256':sha(root/'ownership/labels.npy'),'native_recombine_provenance_sha256':sha(root/'native_recombine.provenance.json'),
+        'original_native_candidate':str(original),'finishing_overrides':finishing_overrides(c),APPEARANCE:appearance_settings(c),
+        'appearance_only':True,'illumination_colour_separate':True}
+    if any(appearance.get(k)!=v for k,v in required.items()):raise ValueError('Derived appearance combined provenance differs')
+    preview=appearance.get('preview_sha256')
+    if not isinstance(preview,str) or len(preview)!=64 or any(x not in '0123456789abcdef' for x in preview):
+        raise ValueError('Derived appearance preview identity is missing')
+    inputs.update(outputs)
+    for path in [root/name for name in record['copies']]+[root/APPEARANCE_COPY,root/'native_recombine.provenance.json',build_path]:
+        inputs[str(path)]=sha(path)
+    return dict(expected,kind='verified-native-appearance-derivative',appearance_candidate=str(root),inputs=inputs,
+        derived_build_sha256=sha(build_path),derived_preview_sha256=preview,
+        limits=expected['limits']+' One completed appearance derivative verified; original physical ownership source hash remains unchanged.')

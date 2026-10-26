@@ -510,14 +510,173 @@ def run_conversion(plan, ktx, threads, prepare_image=None):
         raise
 
 
+def intrinsic_palette_pixels(rgba, regions):
+    """Intrinsic sRGB atlas art only; explicit top-left rectangles, no codec claim.
+
+    RGB5 endpoints and common signed modifiers are art data, not inferred
+    lighting. Nearest linear Rec.709 luminance retains source spatial ordering.
+    Empty regions is an exact no-op. Alpha and unselected RGBA stay exact.
+    """
+    import numpy as np
+    rgba = np.asarray(rgba)
+    if rgba.dtype != np.uint8 or rgba.ndim != 3 or rgba.shape[2] != 4 or min(rgba.shape[:2]) < 1:
+        raise ValueError('Expected nonempty HxWx4 uint8 RGBA8')
+    if not isinstance(regions, list):
+        raise ValueError('regions must be a list')
+    result = rgba.copy()
+    selected = np.zeros(rgba.shape[:2], dtype=bool)
+    records = []
+    names = set()
+    weights = np.array([.2126, .7152, .0722], dtype=np.float64)
+    def decode(rgb):
+        return np.where(rgb <= .04045, rgb / 12.92, ((rgb + .055) / 1.055) ** 2.4)
+    for region in regions:
+        if not isinstance(region, dict) or set(region) - {'name', 'rect', 'method', 'rgb5', 'modifiers'}:
+            raise ValueError('Unknown intrinsic region field')
+        name = region.get('name')
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError('Region names must be nonempty and unique')
+        names.add(name)
+        rect = region.get('rect')
+        if not isinstance(rect, list) or len(rect) != 4 or any(type(v) is not int for v in rect):
+            raise ValueError('rect requires four integer top-left pixel coordinates')
+        x0, y0, x1, y1 = rect
+        if not (0 <= x0 < x1 <= rgba.shape[1] and 0 <= y0 < y1 <= rgba.shape[0]):
+            raise ValueError('Region rectangle outside input or empty')
+        if selected[y0:y1, x0:x1].any():
+            raise ValueError('Intrinsic regions must not overlap')
+        selected[y0:y1, x0:x1] = True
+        rgb = rgba[y0:y1, x0:x1, :3]
+        mean = rgb.mean(axis=(0, 1))
+        method = region.get('method')
+        details = {}
+        if method == 'rgb5-luma':
+            endpoint, modifiers = region.get('rgb5'), region.get('modifiers')
+            if (not isinstance(endpoint, list) or len(endpoint) != 3
+                    or any(type(v) is not int or not 0 <= v <= 31 for v in endpoint)):
+                raise ValueError('rgb5 requires three integers in [0,31]')
+            if (not isinstance(modifiers, list) or len(modifiers) != 4
+                    or any(type(v) is not int or not -255 <= v <= 255 for v in modifiers)
+                    or any(a >= b for a, b in zip(modifiers, modifiers[1:]))):
+                raise ValueError('modifiers requires four strictly increasing signed integers')
+            base = np.array([(n << 3) | (n >> 2) for n in endpoint], dtype=np.int16)
+            palette = base[None, :] + np.array(modifiers, dtype=np.int16)[:, None]
+            if palette.min() < 0 or palette.max() > 255:
+                raise ValueError('Palette exceeds RGB8; clipping is forbidden')
+            levels = decode(palette.astype(np.float64) / 255) @ weights
+            source_y = decode(rgb.astype(np.float64) / 255) @ weights
+            indices = np.argmin(np.abs(source_y[..., None] - levels[None, None, :]), axis=-1)
+            pixels = palette[indices].astype(np.uint8)
+            details = dict(expanded_endpoint_RGB8=base.tolist(), palette_RGB8=palette.tolist(),
+                           palette_linear_Y=levels.tolist(),
+                           palette_usage=[int(np.count_nonzero(indices == i)) for i in range(4)])
+        elif method == 'flat-mean':
+            if 'rgb5' in region or 'modifiers' in region:
+                raise ValueError('flat-mean does not accept palette parameters')
+            flat = np.rint(mean).astype(np.uint8)
+            pixels = np.broadcast_to(flat, rgb.shape)
+            details = dict(constant_RGB8=flat.tolist())
+        else:
+            raise ValueError('Unknown intrinsic palette method')
+        result[y0:y1, x0:x1, :3] = pixels
+        records.append(dict(name=name, rect=rect, method=method,
+                            source_mean_RGB8=mean.tolist(), **details))
+    if not np.array_equal(result[..., 3], rgba[..., 3]) or not np.array_equal(result[~selected], rgba[~selected]):
+        raise RuntimeError('Intrinsic palette changed protected pixels')
+    return result, dict(regions=records, outside_selected_RGBA_exact=True, all_alpha_exact=True,
+                       changed_RGB_pixels=int(np.count_nonzero(np.any(result[..., :3] != rgba[..., :3], axis=-1))))
+
+
+def prepare_intrinsic_palette(recipe_path, output_directory):
+    """Fresh, hash-bound PNG art derivative; independent of KTX conversion.
+
+    No default atlas modification. Successful palette preparation is never
+    evidence of codec exactness, mip survival, on-model quality or bake reuse.
+    """
+    import io
+    import re
+    import numpy as np
+    from PIL import Image
+    recipe_path = Path(recipe_path).resolve()
+    recipe_sha = sha(recipe_path)
+    recipe = read_json(recipe_path)
+    allowed = {'schema_version', 'color_space', 'input', 'dimensions', 'regions', 'output', 'expected_output_sha256'}
+    if (not isinstance(recipe, dict) or set(recipe) - allowed
+            or type(recipe.get('schema_version')) is not int or recipe['schema_version'] != 1
+            or recipe.get('color_space') != 'srgb'):
+        raise ValueError('Expected intrinsic palette schema_version 1 and explicit srgb')
+    source_spec = recipe.get('input')
+    if (not isinstance(source_spec, dict) or set(source_spec) != {'path', 'sha256'}
+            or not isinstance(source_spec['path'], str) or not source_spec['path']):
+        raise ValueError('input requires path and sha256')
+    def digest(value):
+        if not isinstance(value, str) or re.fullmatch('[0-9a-f]{64}', value) is None:
+            raise ValueError('Expected lowercase SHA256')
+        return value
+    expected_input = digest(source_spec['sha256'])
+    source = (recipe_path.parent / source_spec['path']).resolve()
+    if sha(source) != expected_input:
+        raise ValueError('Intrinsic palette input SHA256 mismatch')
+    dimensions = recipe.get('dimensions')
+    if (not isinstance(dimensions, list) or len(dimensions) != 2
+            or any(type(v) is not int or v <= 0 for v in dimensions)):
+        raise ValueError('dimensions requires positive integer [width,height]')
+    with Image.open(source) as image:
+        if image.format != 'PNG' or image.mode != 'RGBA' or list(image.size) != dimensions:
+            raise ValueError('Input must be matching RGBA8 PNG; no implicit conversion or resizing')
+        if image.info.get('icc_profile'):
+            raise ValueError('ICC-tagged input requires explicit prior conversion to sRGB')
+        pixels = np.asarray(image).copy()
+    transformed, proof = intrinsic_palette_pixels(pixels, recipe.get('regions'))
+    name = output_name(recipe.get('output'), '.png')
+    if name == 'intrinsic-palette-receipt.json':
+        raise ValueError('Output conflicts with receipt')
+    stream = io.BytesIO()
+    Image.fromarray(transformed).save(stream, format='PNG')
+    encoded = stream.getvalue()
+    output_sha = hashlib.sha256(encoded).hexdigest()
+    expected_output = recipe.get('expected_output_sha256')
+    if expected_output is not None and digest(expected_output) != output_sha:
+        raise ValueError('Intrinsic palette output SHA256 mismatch; nothing written')
+    with Image.open(io.BytesIO(encoded)) as reloaded:
+        if not np.array_equal(np.asarray(reloaded), transformed):
+            raise RuntimeError('PNG reload differs from authored pixels')
+    if sha(source) != expected_input or sha(recipe_path) != recipe_sha:
+        raise ValueError('Intrinsic palette dependency changed during preparation')
+    directory = Path(output_directory).resolve()
+    directory.mkdir(parents=True, exist_ok=False)
+    target = directory / name
+    target.write_bytes(encoded)
+    receipt = dict(schema_version=1, operation='intrinsic-palette',
+                   recipe=dict(path=str(recipe_path), sha256=recipe_sha),
+                   input=dict(path=str(source), sha256=expected_input),
+                   output=dict(path=str(target), sha256=output_sha, dimensions=dimensions),
+                   helper=dict(path=str(Path(__file__).resolve()), sha256=sha(Path(__file__))),
+                   color_space='srgb', image_origin='top-left', PNG_reload_exact=True,
+                   source_unchanged=True, **proof,
+                   limitations=['Intrinsic art change invalidates dependent transport.',
+                                'Palette formula does not establish ETC1S coding or mip/on-model acceptance.'])
+    (directory / 'intrinsic-palette-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf8')
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=Path(__file__).with_name('texture_conversion.json'))
     parser.add_argument('--inspect', type=Path, metavar='MODEL')
+    parser.add_argument('--intrinsic-palette', type=Path, metavar='RECIPE', help='Opt-in intrinsic atlas art preparation; no KTX encoding')
+    parser.add_argument('--output', type=Path, help='Fresh directory for --intrinsic-palette output and receipt')
     parser.add_argument('--plan', action='store_true')
     parser.add_argument('--ktx', help='KTX executable, overrides config and PATH')
     parser.add_argument('--threads', type=int, default=8)
     args = parser.parse_args()
+    if args.intrinsic_palette:
+        if args.output is None or args.inspect or args.plan or args.ktx:
+            parser.error('--intrinsic-palette requires --output and cannot combine with inspect/plan/ktx')
+        print(json.dumps(prepare_intrinsic_palette(args.intrinsic_palette, args.output), indent=2))
+        return
+    if args.output is not None:
+        parser.error('--output is only for --intrinsic-palette')
     if args.inspect:
         print(json.dumps(inspect_model(read_json(args.inspect)), indent=2))
         return

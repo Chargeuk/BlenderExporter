@@ -30,6 +30,13 @@ class WorkflowPackagingTests(unittest.TestCase):
                                      or '__pycache__' in Path(name).parts
                                      for name in package.namelist()))
 
+    def test_installed_offline_checks_match_maintained_converter_tools(self):
+        for name in ('inspect-babylon.cjs','inspect-babylon-fixture.cjs','render-response-fixture.cjs'):
+            with self.subTest(tool=name):
+                relative='workflow_tools/env_converter/'+name
+                self.assertIn(relative,builder.REQUIRED_TOOLS)
+                self.assertEqual((ADDON/relative).read_bytes(),(ROOT/'tools/env-converter'/name).read_bytes())
+
     def test_builder_excludes_manuals_and_caches_even_if_source_contains_them(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

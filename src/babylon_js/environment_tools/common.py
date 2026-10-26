@@ -81,8 +81,8 @@ def load_config(path):
     validate_camera_set(c)
     from native_ownership import ownership_method
     ownership_method(c)
-    from native_recombine import finishing_overrides
-    finishing_overrides(c)
+    from native_recombine import finishing_overrides, appearance_settings
+    finishing_overrides(c);appearance_settings(c)
     return c
 
 

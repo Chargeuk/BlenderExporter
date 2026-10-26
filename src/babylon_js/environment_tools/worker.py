@@ -593,7 +593,7 @@ def main():
     select_scene(c)
     source_hash=sha(c['_source']);relink(c,root)
     finishing=None
-    if c.get('finishing_overrides'):
+    if c.get('finishing_overrides') or c.get('appearance_colour_adjustment',{}).get('enabled'):
         from native_recombine import apply_finishing
         check_preview_resolution(c)
         finishing=apply_finishing(c)
