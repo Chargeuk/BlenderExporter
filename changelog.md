@@ -1,5 +1,9 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.48 (28 October 2026)
+
+- Keeps the final deferred-volume attachment model compact instead of expanding it with the provenance report writer. Model values, tangent presence and JSON ASCII/nonfinite policies remain unchanged; reports retain their readable indentation.
+
 ## Blender exporter 3.3.47 (26 October 2026)
 
 - Combines the preserved local 3.3.46 workflows with the published 3.3.37 feature line, retaining native physical-diffuse and appearance diagnostics, ordered material restoration, deferred volume attachment, decoded-volume validation and intrinsic palette processing.

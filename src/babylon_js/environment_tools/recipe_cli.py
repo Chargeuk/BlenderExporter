@@ -952,6 +952,7 @@ def attach_volume(config_path,args):
     from babylon_js.environment_lighting_volume import export_volume
     from babylon_js.environment_tools.volume_relocation import scene_identity
     from babylon_js.ktx_export import final_delivery_files,publish_package
+    from babylon_js.ktx_conversion import model_json
     root,config,source,source_hash=background_source(config_path,'source')
     require('native_diagnostic' not in config and 'deferred_volume' in config,'Use an explicitly deferred normal export')
     out=fresh_output(root,args.out);stage=args.stage.resolve()
@@ -975,7 +976,8 @@ def attach_volume(config_path,args):
     options=dict(config=plan['receipt']['path'],image=plan['master']['path'],strength=plan['strength'])
     volume=export_volume(bpy.context,model,work,package,options,config['tools']['ktx'],
         config['preparation'].get('operator_settings',{}).get('ktx_threads',8),plan['environment'])
-    write(package/config['model'],model)
+    # The final model stays compact; provenance reports keep the indented writer.
+    (package/config['model']).write_text(model_json(model,ensure_ascii=True)+'\n',encoding='utf8')
     identity=scene_identity(bpy.context)['sha256']
     require(identity==plan['scene_identity_sha256'],'Volume attachment changed editable source state')
     require(sha(source)==source_hash and sha(config_path)==plan['config_sha256'] and
