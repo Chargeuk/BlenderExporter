@@ -1,5 +1,9 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.49 (28 October 2026)
+
+- Adds audited legacy image dependency cleanup to portable volume relocation. Explicit image-name/hash substitutions preserve protected physical, baked-preview and World graphs plus all non-image scene state, and retain immutable parent receipts without recapturing volumes.
+
 ## Blender exporter 3.3.48 (28 October 2026)
 
 - Keeps the final deferred-volume attachment model compact instead of expanding it with the provenance report writer. Model values, tangent presence and JSON ASCII/nonfinite policies remain unchanged; reports retain their readable indentation.

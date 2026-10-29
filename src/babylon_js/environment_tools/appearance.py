@@ -16,7 +16,7 @@ UI = {'name','label','location','location_absolute','width','width_hidden','heig
       'bl_height_min','bl_height_max','bl_idname'}
 
 
-def preview_identity(material, *, diagnostic=False):
+def preview_identity(material, *, diagnostic=False, image_substitutions=None):
     """Hash shader properties, wiring, non-runtime controls and source-image bytes."""
     image_hashes={}
     def value(v):
@@ -62,6 +62,9 @@ def preview_identity(material, *, diagnostic=False):
             if n.type=='GROUP':row['tree']=tree_data(n.node_tree,ancestors+(tree.as_pointer(),))
             if n.type=='TEX_IMAGE':
                 im=n.image
+                # Read-only counterfactual for audited legacy dependency cleanup.
+                if im is not None and image_substitutions is not None:
+                    im=image_substitutions.get(im.name,im)
                 if im is None and n.get('bjs_preview_image_role')=='ao':
                     available=[x for x in tree.nodes if x.get('bjs_ao_available')]
                     if len(available)!=1 or available[0].outputs[0].default_value!=0:
