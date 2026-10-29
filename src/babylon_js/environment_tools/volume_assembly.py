@@ -13,6 +13,7 @@ import sys
 ROUTE='separate-source-v1'
 VOLUME_KEY='kadshowEnvironmentLightingVolume'
 HERE=Path(__file__).resolve().parent
+if str(HERE) not in sys.path:sys.path.insert(0,str(HERE))
 if str(HERE.parent.parent) not in sys.path:sys.path.insert(0,str(HERE.parent.parent))
 
 def sha(path):
@@ -113,6 +114,60 @@ def package_closure(model,package):
     desc=node['metadata'][VOLUME_KEY];refs.update((desc['texture'],desc['advanced']['texture']))
     return {name:sha(checked_path(package,name))for name in sorted(refs)}
 
+def resolve_stage_b_options(config,config_path,saved):
+    """Explicit, bound clean-source opt-in; never change a World association.
+
+    Saved-only exports retain their previous behavior. The public volume producer
+    still validates the source/receipt/appearance/reference in the untouched context.
+    """
+    ktx=config.get('ktx_options',{})
+    require(isinstance(ktx,dict),'Invalid KTX options')
+    if 'environment_lighting_volume' not in ktx:
+        require(saved is not None,'Missing saved or explicit bound volume association')
+        return saved
+    explicit=ktx['environment_lighting_volume']
+    required={'config','image','strength'}
+    allowed=required|{'simple_divisor_mode','advanced_alpha_policy'}
+    require(isinstance(explicit,dict) and required<=set(explicit)<=allowed,'Explicit volume requires config/image/strength and supported policies')
+    require(type(explicit['strength']) in (int,float) and explicit['strength']==1,'Explicit assembly volume strength must be one')
+    require(explicit.get('simple_divisor_mode','per-pixel') in ('per-pixel','block-4x4'),'Unsupported explicit Simple divisor mode')
+    require(explicit.get('advanced_alpha_policy') in (None,'source-ceiling'),'Unsupported explicit Advanced alpha policy')
+    root=Path(config.get('package_root',Path(config_path).resolve().parent)).resolve()
+    if __package__:
+        from .recipe_cli import resolve_input
+    else:
+        from recipe_cli import resolve_input
+    result=dict(explicit)
+    for key in ('config','image'):
+        value=explicit[key]
+        require(isinstance(value,str) and bool(value),'Explicit volume path must be nonempty: '+key)
+        path=resolve_input(root,config,value)
+        matches=[row for row in config.get('bound_dependencies',[]) if resolve_input(root,config,row['path'])==path]
+        require(bool(matches) and all(row.get('sha256')==sha(path) for row in matches),'Unbound or changed explicit volume input: '+key)
+        result[key]=str(path)
+    if __package__:
+        from .volume_relocation import package_paths
+    else:
+        from volume_relocation import package_paths
+    record=read(result['config']);record_source=package_paths(record,Path(result['config']))
+    require(Path(record_source['scene']).resolve()==source_path(config,config_path) and
+        record_source['sceneSha256']==config['source_sha256'] and record.get('masterSha256')==sha(result['image']),
+        'Explicit volume receipt source/master differs from the immutable assembly source')
+    if saved is not None:
+        # Blender-relative saved paths are relative to the immutable source, not a scratch output.
+        source=source_path(config,config_path)
+        def saved_path(value):
+            require(isinstance(value,str) and bool(value),'Conflicting empty saved volume path')
+            return ((source.parent/value[2:]) if value.startswith('//') else (source.parent/value)).resolve()
+        saved_receipt=saved_path(saved['config'])
+        saved_image=saved_path(saved['image']) if saved.get('image') else (saved_receipt.parent/read(saved_receipt)['master']).resolve()
+        require(saved_receipt==Path(result['config']) and saved_image==Path(result['image']) and
+            type(saved.get('strength',1)) in (int,float) and saved.get('strength',1)==1 and
+            saved.get('simple_divisor_mode','per-pixel')==result.get('simple_divisor_mode','per-pixel') and
+            saved.get('advanced_alpha_policy')==result.get('advanced_alpha_policy'),
+            'Saved and explicit volume associations conflict')
+    return result
+
 def assemble(config_path,stage_a,output):
     """Called only in a second background process opened on the untouched saved scene."""
     import bpy
@@ -127,7 +182,7 @@ def assemble(config_path,stage_a,output):
     boundary,conversion=verify_boundary(stage_a,config,config_path,source_hash)
     associated=Path(bpy.path.abspath(bpy.context.scene.world.get('bjs_environment_image',''))).resolve()
     require(associated==Path(bpy.path.abspath(conversion['environment_options']['image'])).resolve() and sha(associated)==conversion['capture_sha256'],'Stage B ENV reference differs from Stage A')
-    options=saved_options(bpy.context.scene.world);require(options is not None,'Missing saved volume association')
+    options=resolve_stage_b_options(config,config_path,saved_options(bpy.context.scene.world))
     output=Path(output).resolve();require(not output.exists(),'Stage B output must be fresh');output.mkdir(parents=True)
     package=output/'package';package.mkdir();work=output/'work';work.mkdir()
     before=read(Path(stage_a)/config['model']);marker(before)

@@ -70,8 +70,11 @@ def inspect_ktx2(path,role,dimensions,mipmaps=False,*,codec=None):
         if declared_codec=='uastc':expected=(166,2,2);alpha=3 in channels
         else:expected=(163,2,1);alpha=15 in channels
     elif role in ('colour-atlas','material-linear'):
-        if codec not in (None,'basis-lz'):raise ValueError('Material atlas conversion record requires basis-lz')
-        expected=(163,2 if role=='colour-atlas' else 1,1);alpha=15 in channels;declared_codec='basis-lz'
+        declared_codec='basis-lz' if codec is None else codec
+        if declared_codec not in ('basis-lz','uastc'):raise ValueError('Material atlas conversion codec must be basis-lz or uastc')
+        transfer_expected=2 if role=='colour-atlas' else 1
+        if declared_codec=='uastc':expected=(166,transfer_expected,2);alpha=3 in channels
+        else:expected=(163,transfer_expected,1);alpha=15 in channels
     else:raise ValueError('Expected rgbd, tint, colour-atlas or material-linear role')
     if (model,transfer,compression)!=expected or primaries!=1:
         raise ValueError('KTX2 codec/transfer/primaries differ from delivery role')
@@ -518,18 +521,100 @@ def volume_rgbd_comparison(decoded,prepared,master,min_divisor,advanced,threshol
     return result
 
 
-def _volume_encoder_policy(row,prepared,compressed):
+def _volume_simple_mode(row):
+    """Legacy per-pixel stays default; block sharing needs producer preparation proof."""
+    metrics=row.get('metrics',{})
+    mode=metrics.get('rgbd_encoded_divisor_mode','per-pixel')
+    if mode not in ('per-pixel','block-4x4') or metrics.get('rgbd_divisor_mode',mode)!=mode:
+        raise ValueError('Unsupported or mismatched Simple divisor mode')
+    if 'source_preparation_guard' not in metrics:
+        if mode!='per-pixel':raise ValueError('Block Simple requires source preparation guard')
+        return mode
+    guard=metrics['source_preparation_guard']
+    if (not isinstance(guard,dict) or guard.get('when')!='before-ktx-create' or guard.get('byte_exact')is not True
+            or guard.get('divisor_mode')!=mode or guard.get('source_sha256')!=metrics.get('source_sha256')
+            or guard.get('prepared_sha256')!=metrics.get('prepared_sha256')
+            or any(not isinstance(guard.get(key),str) or len(guard[key])!=64 or
+                any(ch not in '0123456789abcdef' for ch in guard[key]) for key in ('source_sha256','prepared_sha256','rgba_sha256'))):
+        raise ValueError('Simple source preparation guard differs from recorded mode/input')
+    return mode
+
+
+def _validate_volume_preparation(row,master,prepared,advanced):
+    mode='per-pixel' if advanced else _volume_simple_mode(row)
+    expected,encoding=core.encode_rgbd(master,mode,fixed_divisor=advanced)
+    if not np.array_equal(prepared,expected):
+        raise ValueError('Retained volume preparation differs from canonical unflipped RGBD encoding of exact EXR')
+    guard=row.get('metrics',{}).get('source_preparation_guard')
+    if guard is not None and (not isinstance(guard,dict) or guard.get('rgba_sha256')!=hashlib.sha256(prepared.tobytes()).hexdigest()):
+        raise ValueError('Volume preparation raw RGBA differs from producer guard')
+    return encoding
+
+
+def _volume_encoder_policy(row,prepared,compressed,*,advanced=False):
     """Quality/Zstd are sealed encoder-receipt proof, not inferred binary fields."""
     command=row.get('command')
     prefix=['create','--format','R8G8B8A8_UNORM','--assign-oetf','linear','--encode','uastc','--threads']
     if (not isinstance(command,list) or len(command)!=16 or not all(isinstance(value,str) for value in command)
             or command[1:9]!=prefix or not command[9].isdigit() or not 1<=int(command[9])<=1024
             or command[10:14]!=['--uastc-quality','4','--zstd','3']
-            or Path(command[-2]).name!=prepared.name or Path(command[-1]).name!=compressed.name):
+            or Path(command[-2]).name!=prepared.name):
         raise ValueError('Retained volume encoder command must declare RGBA8 UNORM/linear/UASTC4/Zstd3 with no mipmaps')
+    prepared=Path(prepared).resolve();compressed=Path(compressed).resolve()
+    original_prepared=Path(command[-2]).resolve();encoded=Path(command[-1]).resolve()
+    if (not original_prepared.is_file() or sha(original_prepared)!=sha(prepared)
+            or sha(compressed)!=row.get('textureSha256')):
+        raise ValueError('Retained volume encoder input/final texture differs')
+    guarded={str(original_prepared):sha(original_prepared),str(compressed):sha(compressed)}
+    alpha_policy=None
+    if 'advancedAlphaPolicy' in row:
+        proof=row['advancedAlphaPolicy']
+        if (not advanced or not isinstance(proof,dict) or proof.get('policy')!='source-ceiling'
+                or not str(proof.get('status','')).startswith('NATIVE_RGBA8_ALPHA_CEILING_VERIFIED')):
+            raise ValueError('Invalid or unsupported volume alpha policy proof')
+        original=Path(proof['original']).resolve();target=Path(proof['target']).resolve()
+        if (encoded!=original or not original.is_file() or sha(original)!=proof['original_sha256']
+                or not target.is_file() or target.name!=compressed.name
+                or sha(target)!=proof['target_sha256'] or proof['target_sha256']!=row['textureSha256']
+                or sha(target)!=row['textureSha256'] or Path(proof['prepared']).resolve()!=original_prepared
+                or proof['prepared_sha256']!=sha(prepared)):
+            raise ValueError('Source-ceiling original/final/prepared inputs differ')
+        pixels=volume_png_rgba(prepared);D=int(pixels[...,3].min())
+        if (type(proof.get('original_divisor_byte'))is not int or proof['original_divisor_byte']!=D
+                or type(proof.get('minimum_divisor'))not in (int,float)
+                or not math.isclose(proof['minimum_divisor'],D/255,rel_tol=0,abs_tol=1e-12)):
+            raise ValueError('Source-ceiling original prepared divisor differs')
+        metrics=row.get('metrics',{});guard=metrics.get('source_preparation_guard',{})
+        if (not isinstance(guard,dict) or guard.get('when')!='before-ktx-create' or guard.get('byte_exact')is not True
+                or guard.get('divisor_mode')!='global-fixed' or guard.get('source_sha256')!=metrics.get('source_sha256')
+                or guard.get('prepared_sha256')!=sha(prepared)
+                or guard.get('rgba_sha256')!=hashlib.sha256(pixels.tobytes()).hexdigest()
+                or not Path(row['source']).is_file() or sha(row['source'])!=metrics.get('source_sha256')):
+            raise ValueError('Source-ceiling source preparation guard differs')
+        dimensions=[pixels.shape[1],pixels.shape[0]]
+        inspect_ktx2(original,'rgbd',dimensions,False,codec='uastc')
+        calls=proof.get('calls')
+        if not isinstance(calls,list):raise ValueError('Missing actual source-ceiling decode command proof')
+        for key,source_file in (('before_raw',original),('after_raw',target)):
+            raw=Path(proof[key]).resolve()
+            if not raw.is_file() or sha(raw)!=proof[key+'_sha256']:
+                raise ValueError('Source-ceiling retained native RGBA changed')
+            expected=[command[0],'extract','--transcode','rgba8','--level','0','--raw',str(source_file),str(raw)]
+            if not any(isinstance(call,dict) and call.get('argv')==expected and call.get('numeric_exit')==0 for call in calls):
+                raise ValueError('Source-ceiling raw decode is not bound to actual source/final KTX')
+            guarded[str(raw)]=sha(raw)
+        after=np.fromfile(proof['after_raw'],dtype=np.uint8).reshape(pixels.shape)
+        from volume_audit import validate_advanced_alpha
+        alpha_policy=validate_advanced_alpha(row,pixels,after,Path(proof['after_raw']),compressed)
+        guarded.update({str(original):sha(original),str(target):sha(target),str(Path(row['source']).resolve()):sha(row['source'])})
+    elif (encoded.name!=compressed.name or encoded.stem.endswith('_unconstrained') or not encoded.is_file()
+            or sha(encoded)!=row['textureSha256']):
+        raise ValueError('Retained default volume command must name actual final KTX')
+    else:guarded[str(encoded)]=sha(encoded)
     return {'proof':'Hash-bound retained exporter command, not quality-level inference from KTX binary',
         'command':command,'format':'R8G8B8A8_UNORM','assign_oetf':'linear','codec':'uastc',
-        'uastc_quality':4,'zstd':3,'mipmaps':False,'flip_y':False,'alpha':'preserve'}
+        'uastc_quality':4,'zstd':3,'mipmaps':False,'flip_y':False,'alpha':'preserve',
+        'source_ceiling_preflight':alpha_policy,'guarded_inputs':guarded}
 
 
 def validate_volumes(recipe_path,output,ktx):
@@ -625,13 +710,13 @@ def validate_volumes(recipe_path,output,ktx):
         prepared=volume_png_rgba(files['prepared']);master=volume_linear(files['master'])
         if master.shape!=(dimensions[1],dimensions[0],3) or prepared.shape!=(dimensions[1],dimensions[0],4):
             raise ValueError('Native volume master/prepared dimensions differ')
-        expected,encoding=core.encode_rgbd(master,fixed_divisor=name=='advanced')
-        if not np.array_equal(prepared,expected):raise ValueError('Retained volume preparation differs from canonical unflipped RGBD encoding of exact EXR')
+        encoding=_validate_volume_preparation(row,master,prepared,name=='advanced')
         for key in ('alpha_min','alpha_max','rgbd_encoded_divisor_mode','rgbd_image_divisor','rgbd_image_divisor_byte'):
             if metrics_row.get(key)!=encoding[key]:raise ValueError('Volume recorded divisor/preparation metric differs: '+key)
         if name=='advanced' and metrics_row.get('rgbd_divisor_mode')!='global-fixed':raise ValueError('Advanced conversion must explicitly record global-fixed divisor')
         divisors[name]=float(prepared[...,3].min())/255;masters[name]=master;preparations[name]=prepared
-        policies[name]=_volume_encoder_policy(row,files['prepared'],files['ktx'])
+        policies[name]=_volume_encoder_policy(row,files['prepared'],files['ktx'],advanced=name=='advanced')
+        for filename,digest in policies[name]['guarded_inputs'].items():remember(filename,digest)
         profiles[name]=inspect_ktx2(files['ktx'],'rgbd',dimensions,False,codec='uastc')
     model_info=volume_model_contract(model,receipt,sha(items['simple']['ktx']),divisors['simple'],
                                      sha(items['advanced']['ktx']),divisors['advanced'])
@@ -648,6 +733,10 @@ def validate_volumes(recipe_path,output,ktx):
             logs.append({'command':command,'returncode':completed.returncode,'stdout':completed.stdout,'stderr':completed.stderr})
         if raw.stat().st_size!=width*height*4:raise ValueError('Actual decompressed volume RGBA8 byte count differs')
         decoded=np.fromfile(raw,dtype=np.uint8).reshape(height,width,4)
+        post_decode_alpha=None
+        if name=='advanced' and 'advancedAlphaPolicy' in rows[name]:
+            from volume_audit import validate_advanced_alpha
+            post_decode_alpha=validate_advanced_alpha(rows[name],preparations[name],decoded,raw,files['ktx'])
         comparison=volume_rgbd_comparison(decoded,preparations[name],masters[name],divisors[name],name=='advanced',recipe['thresholds'][name])
         linear=output/(name+'_decoded_linear.npy');np.save(linear,rgbd_decode(decoded,divisors[name]),allow_pickle=False)
         generated.update({str(raw):sha(raw),str(linear):sha(linear)})
@@ -655,9 +744,9 @@ def validate_volumes(recipe_path,output,ktx):
             'container_profile':profiles[name],'encoder_policy_receipt':policies[name],'official_operations':logs,
             'raw':str(raw),'raw_sha256':sha(raw),'decoded_linear':str(linear),'decoded_linear_sha256':sha(linear),
             'image_origin':'top-left; retained flip_y=false and rd container; no similarity-selected flip',
-            'comparison':comparison}
+            'comparison':comparison,'actual_official_decode_alpha_proof':post_decode_alpha}
     for tool in (Path(__file__),HERE.parent/'ktx_conversion.py',HERE.parent/'environment_lighting_volume.py',
-                 HERE.parent/'spatial_lighting.py',HERE.parent/'environment_tools/volume_relocation.py'):
+                 HERE.parent/'spatial_lighting.py',HERE.parent/'environment_tools/volume_relocation.py',HERE/'volume_audit.py'):
         inputs[str(tool.resolve())]=sha(tool)
     for path,digest in inputs.items():
         if sha(path)!=digest:raise ValueError('Volume input changed during validation: '+path)

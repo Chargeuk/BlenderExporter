@@ -35,6 +35,7 @@ DEF_NORMALS_FORWARD = False
 DEF_SPECULAR_ANTIALISING = False
 
 DEF_EMISSIVE_INTENSITY = 1.0
+DEF_INDEX_OF_REFRACTION = 1.5
 
 DEF_IRIDESCENCE_INTENSITY = 0
 DEF_IRIDESCENCE_MIN_THICKNESS = 0
@@ -376,6 +377,13 @@ class BJSMaterial:
                 write_color(file_handler, 'tintColor', self.bjsNodeTree.subSurfaceTintColor)
                 if self.bjsNodeTree.indexOfRefraction is not None:
                     write_float(file_handler, 'indexOfRefraction', self.bjsNodeTree.indexOfRefraction)
+                file_handler.write('}')
+            elif (self.bjsNodeTree.indexOfRefraction is not None
+                  and self.bjsNodeTree.indexOfRefraction != DEF_INDEX_OF_REFRACTION):
+                # PBR parses IOR from subSurface even with translucency/refraction off.
+                # Preserve dielectric reflectance without enabling either feature.
+                file_handler.write(',"subSurface":{')
+                write_float(file_handler, 'indexOfRefraction', self.bjsNodeTree.indexOfRefraction, noComma=True)
                 file_handler.write('}')
 
             # source principled node

@@ -52,6 +52,46 @@ def preview(path,reference,prepared,decoded,error):
     display=np.where(panel<=.0031308,12.92*panel,1.055*np.power(panel,1/2.4)-.055)
     Image.fromarray(np.rint(np.clip(display,0,1)*255).astype(np.uint8),'RGB').save(path)
 
+def validate_advanced_alpha(conversion,prepared,decoded,raw,compressed,*,producer_package=None,package_files=None):
+    """Keep alpha guards for both actual default encode and explicit enforcement."""
+    require(prepared.shape==decoded.shape and prepared.dtype==decoded.dtype==np.uint8 and
+        prepared.ndim==3 and prepared.shape[-1]==4,'Advanced alpha requires matching nativeRGBA8')
+    D=int(prepared[...,3].min())
+    require(1<=D<=255 and np.all(prepared[...,3]==D) and np.all(decoded[...,3]<=D) and
+        np.all(np.maximum(decoded[...,3],D)==D),'Advanced original divisor ceiling failed')
+    if 'advancedAlphaPolicy' in conversion:
+        proof=conversion['advancedAlphaPolicy']
+        require(isinstance(proof,dict) and proof.get('policy')=='source-ceiling','Invalid or unknown Advanced alpha policy proof')
+        require(proof.get('RGB_byte_exact')is True and proof.get('RGB_before_sha256')==proof.get('RGB_after_sha256') and
+            dd.sha(proof['after_raw'])==proof['after_raw_sha256']==dd.sha(raw) and dd.sha(proof['before_raw'])==proof['before_raw_sha256'],
+            'Advanced actual nativeRGBA8RGB-invariance proof differs')
+        before=np.fromfile(proof['before_raw'],dtype=np.uint8).reshape(decoded.shape)
+        require(np.array_equal(before[...,:3],decoded[...,:3]) and hashlib.sha256(before[...,:3].tobytes()).hexdigest()==proof['RGB_before_sha256'],
+            'Advanced decoded RGB bytes changed during alpha enforcement')
+        return dict(mode='source-ceiling',alpha_enforcement_claim=True,original_divisor_byte=D)
+    command=conversion.get('command')
+    require(isinstance(command,list) and len(command)>=4 and all(isinstance(v,str) and v for v in command) and command[1]=='create',
+        'Default Advanced requires its actual direct encode command')
+    def flag(name,value):
+        require(command.count(name)==1 and command.index(name)+1<len(command) and command[command.index(name)+1]==value,
+            'Default Advanced encode option differs: '+name)
+    for name,value in (('--format','R8G8B8A8_UNORM'),('--assign-oetf','linear'),('--encode','uastc'),('--uastc-quality','4'),('--zstd','3')):flag(name,value)
+    require('--generate-mipmap' not in command,'Default Advanced must not generate mipmaps')
+    prepared_path=Path(conversion['metrics']['prepared']).resolve()
+    require(Path(command[-2]).resolve()==prepared_path and prepared_path.is_file(),'Default Advanced prepared input differs')
+    target=Path(command[-1]).resolve();compressed=Path(compressed).resolve()
+    digest=conversion['textureSha256']
+    require(not target.stem.endswith('_unconstrained') and target.is_file() and target.name==conversion['texture']==compressed.name and
+        dd.sha(target)==digest==dd.sha(compressed),'Default Advanced output is not the actual final encoded KTX')
+    lineage=None
+    if target!=compressed:
+        require(producer_package is not None and target==(Path(producer_package)/conversion['texture']).resolve() and
+            isinstance(package_files,dict) and package_files.get(conversion['texture'])==digest,
+            'Default Advanced copy lacks original assembly closure lineage')
+        lineage=dict(producer=str(target),current=str(compressed),sha256=digest,assembly_closure_verified=True)
+    return dict(mode='direct-default-encode',alpha_enforcement_claim=False,original_divisor_byte=D,
+        encoded_output=str(target),encoded_output_sha256=digest,verified_copy_lineage=lineage)
+
 def audit(recipe_path,output,ktx):
     recipe_path=Path(recipe_path).resolve();recipe=read(recipe_path)
     output=Path(output).resolve();require(not output.exists(),'Use a fresh volume audit output')
@@ -95,14 +135,10 @@ def audit(recipe_path,output,ktx):
             decoded=np.fromfile(raw,dtype=np.uint8).reshape(height,width,4)
             D=int(prepared[...,3].min());floor=D/255
             require(metadata.get('minDivisor')==floor and metadata.get('strength')==1 and not isinstance(metadata.get('strength'),bool),'Original minimum divisor/strength metadata differs')
+            alpha_validation=None
             if role=='Advanced':
-                proof=conversion.get('advancedAlphaPolicy',{})
-                require(np.all(prepared[...,3]==D) and np.all(decoded[...,3]<=D) and np.all(np.maximum(decoded[...,3],D)==D),'Advanced original divisor ceiling failed')
-                require(proof.get('RGB_byte_exact')is True and proof.get('RGB_before_sha256')==proof.get('RGB_after_sha256') and
-                    dd.sha(proof['after_raw'])==proof['after_raw_sha256']==dd.sha(raw) and dd.sha(proof['before_raw'])==proof['before_raw_sha256'],
-                    'Advanced actual nativeRGBA8RGB-invariance proof differs')
-                before=np.fromfile(proof['before_raw'],dtype=np.uint8).reshape(height,width,4)
-                require(np.array_equal(before[...,:3],decoded[...,:3]) and hashlib.sha256(before[...,:3].tobytes()).hexdigest()==proof['RGB_before_sha256'],'Advanced decoded RGB bytes changed during alpha enforcement')
+                alpha_validation=validate_advanced_alpha(conversion,prepared,decoded,raw,compressed,
+                    producer_package=Path(report['model']).resolve().parent,package_files=report['final_files'])
             actual=dd.rgbd_decode(decoded,floor);prepared_linear=dd.rgbd_decode(prepared,floor)
             comparison=dd.compare_rgbd(decoded,prepared,master,np.ones(master.shape[:2],dtype=bool),np.ones_like(master),floor)
             total=norm_error(actual,master);checks={'maximum_normalized_per_texel_RGB_error':float(total.max())<=screens['quality']['maximum_normalized_per_texel_RGB_error']}
@@ -128,7 +164,8 @@ def audit(recipe_path,output,ktx):
             assets.append(dict(mode=role,quality_pass=all(checks.values()),checks=checks,failed_screens=[k for k,v in checks.items()if not v],
                 comparison=comparison,encoded_rgba_error=dd.metrics(np.abs(decoded.astype(float)-prepared.astype(float))/255),
                 normalized_total_error=dd.metrics(total),profile=profile,decode_command=argv,raw_sha256=dd.sha(raw),
-                original_prepared_divisor_byte=D,banks=bank_reports,unit_albedo_diagnostic_only=True))
+                original_prepared_divisor_byte=D,banks=bank_reports,unit_albedo_diagnostic_only=True,
+                advanced_alpha_validation=alpha_validation))
         require(dd.sha(source)==source_hash,'Saved source changed during audit')
         result=dict(kind='nativeRGBA8-volume-audit-v1',execution_completed=True,quality_pass=all(a['quality_pass']for a in assets),
             source_sha256=source_hash,receipt_sha256=dd.sha(receipt_path),model_sha256=dd.sha(model_path),screens_sha256=dd.sha(recipe['screens']),

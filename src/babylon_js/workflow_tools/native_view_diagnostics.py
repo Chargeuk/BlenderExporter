@@ -241,14 +241,26 @@ def preview_variant(material,root,variant,*,native_maps=None):
                         groups[key]=original.copy();copy_groups(groups[key])
                     node.node_tree=groups[key]
         copy_groups(clone.node_tree)
-        bound={}
+        bound={};preserved_optional=[]
         for tree in [clone.node_tree]+list(groups.values()):
             for node in tree.nodes:
                 role=node.get('bjs_preview_image_role')
                 if node.type=='TEX_IMAGE' and (role in ('direct','indirect') or (native_maps is not None and role)):
                     if native_maps is not None and variant not in ('raw','processed'):raise ValueError('Native transport variant must be raw or processed')
                     original=node.image
-                    if original is None:raise ValueError('Response sampler lacks original image')
+                    if original is None:
+                        if native_maps is not None and role=='ao':
+                            # The saved graph permits an unassigned AO image only
+                            # when its availability control disables that branch.
+                            # Reuse that validator, rather than inventing a second
+                            # optional-image policy or manufacturing an AO image.
+                            preview_identity(clone)
+                            preserved_optional.append({'role':role,'node':node.name,'tree':tree.name,
+                                'image':None,'preserved':True,'availability':0.,
+                                'validation':'appearance.preview_identity disabled-AO contract',
+                                'interpolation':node.interpolation,'extension':node.extension})
+                            continue
+                        raise ValueError('Response sampler lacks original image')
                     if native_maps is not None:
                         native_sampler_colorspace(role,original.colorspace_settings.name)
                         if role=='colour_adjustment' and original.alpha_mode!='CHANNEL_PACKED':
@@ -279,6 +291,7 @@ def preview_variant(material,root,variant,*,native_maps=None):
         if any(clone_values[k]!=value for k,value in original_values.items() if k!='AO Strength'):raise RuntimeError('AO bypass changed another saved control')
         record={'variant':variant,'accepted':False,'original_preview_sha256':before,'variant_preview_sha256':preview_identity(clone),
             'bindings':{str(key):{k:v for k,v in row.items() if k!='image'} for key,row in bound.items()},
+            'preserved_unassigned_optional_samplers':preserved_optional,
             'mode':'native-transport' if native_maps is not None else 'response',
             'response_variant':response_variant,'saved_grades_AO_colour_unchanged':variant!='processed-ao-bypass',
             'only_AO_strength_bypassed':variant=='processed-ao-bypass','original_actual_controls':original_values,'clone_actual_controls':clone_values,

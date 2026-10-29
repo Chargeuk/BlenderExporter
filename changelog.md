@@ -1,5 +1,13 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.58 (29 October 2026)
+
+- Preserves optional unassigned AO slots in native transport diagnostics only when the saved appearance graph validates that AO is disabled; other missing or active-image cases remain errors.
+- Serializes non-default Principled scalar IOR to PBR subSurface.indexOfRefraction without enabling refraction or translucency; the default IOR path remains unchanged.
+- Adds guarded materialization of an absent, already-verified combined EXR for native diagnostics, with linear interpretation and dimension checks; source saving and repair of invalid resident images are not performed.
+- Extends separate-source Stage B volume assembly to accept a hash-bound explicit receipt/master/strength association when no saved World association is present, while rejecting conflicts and retaining producer/source validation.
+- Extends decoded delivery checks for declared ETC1S or UASTC material profiles and paired Simple/Advanced volume records, including optional Advanced source-ceiling proof validation. Existing material codec defaults, RGBD lightmap encoding and producer policies remain unchanged.
+
 ## Blender exporter 3.3.48 (28 October 2026)
 
 - Keeps the final deferred-volume attachment model compact instead of expanding it with the provenance report writer. Model values, tangent presence and JSON ASCII/nonfinite policies remain unchanged; reports retain their readable indentation.

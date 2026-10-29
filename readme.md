@@ -1,6 +1,6 @@
 # Blender to Babylon.js exporter
 
-## Chargeuk fork: version 3.3.48
+## Chargeuk fork: version 3.3.58
 
 This fork maintains the Babylon.js Blender exporter and packages workflows for Blender 5.2. The add-on retains the scene and material exporter and adds optional texture delivery and environment-lighting tools.
 
@@ -10,10 +10,13 @@ Current fork features include:
 - Optional Basis skybox and Babylon ENV conversion for prepared panoramas.
 - Split direct/indirect lightmap preview and AO grading, physical colour adjustment, and AgX-compensated lightmap preparation.
 - Saved-scene environment helpers for preparation, baking and ownership checks, receiver response, camera capture (including uncapped native physical-diffuse references), spatial lighting, and simple or advanced environment-lighting volumes.
-- Reusable Python workflow tools included in the installable add-on package, including offline paired Simple/Advanced RGBD volume delivery validation with a native OpenImageIO reader.
+- Reusable Python workflow tools included in the installable add-on package, including offline paired Simple/Advanced RGBD volume delivery validation with a native OpenImageIO reader. The validator supports declared ETC1S or UASTC material profiles and checks Advanced source-ceiling proofs when supplied.
+- Principled BSDF non-default scalar IOR is serialized as PBR `subSurface.indexOfRefraction` without enabling refraction or translucency.
+- Native transport diagnostics preserve an unassigned optional AO image only when the saved appearance graph validates AO as disabled; required or active missing image bindings still fail.
 - Source-bound solid/culling diagnostics with explicit evaluated delivery membership and recorded face omissions, plus UV chart-spacing and signed-border measurements.
 - Offline Babylon geometry inspection and native merge emulation with explicit structural limits; these reports do not replace application or rendered acceptance.
-- Opt-in `separate-source-v1` export assembly prepares delivery assets in a disposable scene, then validates and adds the lighting volume from the untouched saved source.
+- Opt-in `separate-source-v1` export assembly prepares delivery assets in a disposable scene, then validates and adds the lighting volume from the untouched saved source. Stage B can use a hash-bound explicit receipt/master association when no saved World association exists; a conflicting saved association is rejected.
+- Native diagnostic export may materialize a missing combined EXR from its already-verified source file, after checking the expected size and linear interpretation; it does not repair a bad resident image or save the Blender source.
 - Optional per-World and per-export-dialog environment-lighting defaults, serialized as a versioned KaDshow profile only for exports containing `hasenv`.
 
 These options are purpose-built for prepared environments. Their presence does not make arbitrary KaDshow scenes or client runtime packages automatically compatible; see [the KaDshow integration contract and boundaries](docs/KADSHOW_EXPORT_GAPS.md).

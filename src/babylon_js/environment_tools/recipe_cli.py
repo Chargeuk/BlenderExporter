@@ -687,6 +687,26 @@ def native_diagnostic_output(root,candidate,out):
     return out
 
 
+def native_combined_image(candidate, size):
+    """Load an absent, already-verified master; never repair bad resident state."""
+    import bpy
+    path=(Path(candidate)/'masters/combined.exr').resolve()
+    require(path.is_file(),'Verified combined image is missing')
+    images=[image for image in bpy.data.images if image.source=='FILE' and image.filepath
+            and Path(bpy.path.abspath(image.filepath)).resolve()==path]
+    materialized=not images
+    if materialized:
+        image=bpy.data.images.load(str(path),check_existing=False)
+        image.colorspace_settings.name='Linear Rec.709'
+        images=[image]
+    require(all(image.colorspace_settings.name in ('Non-Color','Linear Rec.709')
+                and tuple(image.size)==(size,size) for image in images),
+            'Combined interpretation/dimensions differ')
+    return dict(path=str(path),materialized=materialized,source_saved=False,
+        images=[dict(name=image.name,colour_space=image.colorspace_settings.name,
+                     dimensions=list(image.size)) for image in images])
+
+
 def export_native_diagnostic(config_path,args):
     import bpy
     import addon_utils
@@ -747,8 +767,7 @@ def export_native_diagnostic(config_path,args):
         actual={}
         for row in samplers['bindings'].values():actual[row['role']]=actual.get(row['role'],0)+len(row['samplers'])
         require(actual==options['expected_sampler_counts'],'Managed sampler-role counts differ')
-    combined=[i for i in bpy.data.images if i.source=='FILE' and i.filepath and Path(bpy.path.abspath(i.filepath)).resolve()==candidate/'masters/combined.exr']
-    require(combined and all(i.colorspace_settings.name in ('Non-Color','Linear Rec.709') and tuple(i.size)==(c['size'],c['size']) for i in combined),'Combined interpretation/dimensions differ')
+    combined_image=native_combined_image(candidate,c['size'])
     require(environment_controls.find_controls(scene.world) is not None,'Managed World routing required; raw HDR fallback is not a room capture')
     require({k:getattr(scene.view_settings,k) for k in ('view_transform','look','exposure','gamma')}==options['display']
             and not scene.view_settings.use_curve_mapping and scene.display_settings.display_device=='sRGB','Saved display differs')
@@ -823,7 +842,7 @@ def export_native_diagnostic(config_path,args):
             restore_appearance(c)
     write(out/'STAGE_RESULT.json',dict(schema_version=1,kind='unaccepted-native-diagnostic-export',accepted=False,
         source_saved=False,source_sha256=sha(source),geometry_sha256=proof['geometry_sha256'],audit_only=args.audit_only,
-        actual_sampler_counts=actual,saved_controls=saved_controls,combined_verification=combination,glass_preparation=glass_facts,
+        actual_sampler_counts=actual,saved_controls=saved_controls,combined_verification=combination,combined_image=combined_image,glass_preparation=glass_facts,
         actual_serialized_counts=serialized_counts,
         appearance_colour_adjustment=proof.get('appearance_colour_adjustment'),
         original_native_candidate=proof.get('original_candidate'),
