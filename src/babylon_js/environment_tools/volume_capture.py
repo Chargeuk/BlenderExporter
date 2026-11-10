@@ -450,14 +450,18 @@ def run(config_path, phase, skip_trial=False):
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--config',type=Path)
-    parser.add_argument('--phase',choices=('trial','capture','calibrate','derive','relocate'),required=True)
+    parser.add_argument('--phase',choices=('trial','capture','calibrate','derive','relocate','cleanup-dependencies'),required=True)
     parser.add_argument('--receipt',type=Path)
     parser.add_argument('--output',type=Path)
     parser.add_argument('--orientation',type=Path)
     parser.add_argument('--skip-trial',action='store_true',help='Explicit user override: capture the full grid without a trial; all source/clearance checks remain enabled')
     args=parser.parse_args(sys.argv[sys.argv.index('--')+1:])
     if args.skip_trial and args.phase != 'capture':parser.error('--skip-trial requires --phase capture')
-    if args.phase=='relocate':
+    if args.phase=='cleanup-dependencies':
+        if not args.config:parser.error('cleanup-dependencies requires --config')
+        from volume_relocation import cleanup_dependencies
+        cleanup_dependencies(args.config)
+    elif args.phase=='relocate':
         if not args.config:parser.error('relocate requires --config')
         from volume_relocation import relocate
         relocate(args.config)

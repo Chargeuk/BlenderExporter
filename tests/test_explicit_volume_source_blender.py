@@ -16,7 +16,7 @@ from babylon_js.environment_tools.appearance import preview_identity
 from babylon_js.environment_tools.ao import geometry_identity
 from babylon_js.environment_tools.volume_assembly import resolve_stage_b_options
 from babylon_js.environment_lighting_volume import saved_options,validate_record,validate_source
-assert Path(babylon_js.__file__).resolve().parent==a.addon.resolve() and tuple(babylon_js.bl_info['version'])==(3,3,58)
+assert Path(babylon_js.__file__).resolve().parent==a.addon.resolve() and tuple(babylon_js.bl_info['version'])==(3,3,61)
 if a.require_registered:assert bpy.ops.export.bjs.get_rna_type().identifier
 sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def write(path,data):path.write_text(json.dumps(data,indent=2)+'\n');return path

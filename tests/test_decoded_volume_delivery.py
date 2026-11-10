@@ -116,6 +116,38 @@ class ArtifactFixture:
     def reseal(self,key,name,value):
         path=self.write(name,value);self.recipe[key]=self.ref(path);self.write('validation.json',self.recipe)
 
+    def add_portable_cleanup(self, *, legacy_proof_name=False):
+        original = self.write('original_volume_receipt.json', self.receipt)
+        source = self.receipt['source']
+        parent = copy.deepcopy(self.receipt)
+        parent['source'].update({key: Path(source[key]).name
+                                 for key in ('scene','scopeRecipe','combined','combinedProvenance','reference')})
+        identity = {'version': 1, 'sha256': 'b'*64}
+        parent_proof = dict(version=1, originalSourceSha256=source['sceneSha256'],
+                            sourceSha256=source['sceneSha256'], originalReceiptSha256=delivery.sha(original),
+                            sceneIdentity=identity)
+        active_proof = self.write('relocation_provenance.json', parent_proof)
+        parent.update(pathBase='receipt', packageRoot='.', relocation=dict(
+            version=1, originalReceipt=original.name, originalReceiptSha256=delivery.sha(original),
+            proof=active_proof.name, proofSha256=delivery.sha(active_proof)))
+        prefix = 'dependency_cleanup_'+source['sceneSha256'][:12]
+        saved_receipt = self.write(prefix+'_receipt.json', parent)
+        saved_proof = self.write(prefix+'_proof.json', parent_proof)
+        cleaned = self.base/'cleaned.fixture';cleaned.write_bytes(b'synthetic cleanup derivative')
+        clean_identity = {'version': 1, 'sha256': 'c'*64}
+        proof = dict(parent_proof, sourceSha256=delivery.sha(cleaned), sceneIdentity=clean_identity,
+                     dependencyCleanup=dict(version=1, sourceSha256=source['sceneSha256'], sceneIdentityBefore=identity,
+                         canonicalSceneIdentityBefore=clean_identity, parentReceipt=saved_receipt.name,
+                         parentReceiptSha256=delivery.sha(saved_receipt), parentProof=saved_proof.name,
+                         parentProofSha256=delivery.sha(saved_proof)))
+        proof_path = self.write(active_proof.name if legacy_proof_name else prefix+'_derivative_proof.json', proof)
+        self.receipt = copy.deepcopy(parent)
+        self.receipt['source'].update(scene=cleaned.name, sceneSha256=delivery.sha(cleaned))
+        self.receipt['relocation'].update(proof=proof_path.name, proofSha256=delivery.sha(proof_path))
+        self.recipe['source_blend'] = self.ref(cleaned)
+        self.reseal('receipt', 'volume_receipt.json', self.receipt)
+        return saved_receipt, saved_proof
+
     def run(self,command,**options):
         self.calls.append(command)
         if command[1]=='--version':return subprocess.CompletedProcess(command,0,'ktx version 4.4.2','')
@@ -187,6 +219,74 @@ class VolumeDecodeRegression(unittest.TestCase):
                 self.assertTrue(Path(row['decoded_linear']).is_file())
             for path,digest in result['inputs'].items():self.assertEqual(delivery.sha(path),digest)
             with self.assertRaisesRegex(ValueError,'new volume validation'):fixture.validate()
+
+    def test_paired_cleanup_seals_both_parent_artifacts_for_current_and_legacy_proof_names(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), tempfile.TemporaryDirectory() as temporary:
+                fixture = ArtifactFixture(temporary)
+                parents = fixture.add_portable_cleanup(legacy_proof_name=legacy)
+                result = fixture.validate()
+                self.assertEqual(result['status'], 'passed')
+                for path in parents:
+                    self.assertEqual(result['inputs'][str(path.resolve())], delivery.sha(path))
+
+    def test_paired_cleanup_rejects_missing_or_tampered_parent_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = ArtifactFixture(temporary)
+            for path in fixture.add_portable_cleanup():
+                original = path.read_bytes()
+                for tamper in (False, True):
+                    with self.subTest(path=path.name, tamper=tamper):
+                        if tamper:
+                            path.write_bytes(b'{}')
+                        else:
+                            path.unlink()
+                        with self.assertRaisesRegex(ValueError, 'Dependency cleanup parent evidence changed'):
+                            fixture.validate()
+                        self.assertEqual(fixture.calls, [])
+                        path.write_bytes(original)
+
+    def test_default_paired_volume_accepts_missing_staging_copies_but_rejects_changed_copies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = ArtifactFixture(temporary)
+            fixture.add_portable_cleanup()
+            staging = fixture.base/'private-staging'
+            for row in (fixture.report['environment_lighting_volume'], fixture.rows['advanced']):
+                row['command'][-2:] = [str(staging/Path(path).name) for path in row['command'][-2:]]
+            fixture.reseal('conversion_report', 'conversion.json', fixture.report)
+            result = fixture.validate()
+            self.assertEqual(result['status'], 'passed')
+            self.assertFalse(any(Path(path).parent == staging for path in result['inputs']))
+            staging.mkdir()
+            for index, message in ((-2, 'encoder input'), (-1, 'actual final KTX')):
+                with self.subTest(command_index=index):
+                    path = Path(fixture.report['environment_lighting_volume']['command'][index])
+                    path.write_bytes(b'wrong staging bytes')
+                    fixture.calls.clear()
+                    with self.assertRaisesRegex(ValueError, message):
+                        fixture.validate(output='rejected')
+                    self.assertEqual(fixture.calls, [])
+                    path.unlink()
+
+    def test_opt_in_encoder_proofs_still_require_staging_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = ArtifactFixture(temporary)
+            for advanced, name in ((False, 'simple'), (True, 'advanced')):
+                with self.subTest(advanced=advanced):
+                    row = copy.deepcopy(fixture.rows[name])
+                    prepared = Path(row['metrics']['prepared'])
+                    compressed = fixture.base/row['texture']
+                    row['command'][-2] = str(fixture.base/'missing'/prepared.name)
+                    if advanced:
+                        row['advancedAlphaPolicy'] = {'policy': 'source-ceiling'}
+                    else:
+                        metrics = row['metrics']
+                        metrics.update(rgbd_encoded_divisor_mode='block-4x4', rgbd_divisor_mode='block-4x4',
+                                       source_preparation_guard=dict(when='before-ktx-create', byte_exact=True,
+                                           divisor_mode='block-4x4', source_sha256=metrics['source_sha256'],
+                                           prepared_sha256=metrics['prepared_sha256'], rgba_sha256='a'*64))
+                    with self.assertRaisesRegex(ValueError, 'encoder input'):
+                        delivery._volume_encoder_policy(row, prepared, compressed, advanced=advanced)
 
     def test_actual_decoded_overshoot_persists_failed_report(self):
         with tempfile.TemporaryDirectory() as temporary:

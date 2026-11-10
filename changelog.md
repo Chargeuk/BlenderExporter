@@ -1,5 +1,15 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.61 (10 November 2026)
+
+- Combines the guarded decoded-delivery checks from 3.3.59 with the portable volume cleanup and lineage checks from 3.3.60.
+
+## Blender exporter 3.3.60 (10 November 2026)
+
+- Combines the 3.3.58 exporter fixes with audited legacy image dependency cleanup during portable volume relocation.
+- Explicit image-name and hash substitutions preserve the protected lighting graphs, non-image scene state and original volume receipts without recapturing volumes.
+- Validates cleanup lineage in offline delivery checks and publishes a derivative receipt only after validation succeeds. Default paired-volume checks can use hash-bound retained artifacts after private encoder staging files are removed.
+
 ## Blender exporter 3.3.59 (31 October 2026)
 
 - Hardens decoded-delivery provenance checks by binding parsed JSON bytes to their first observed hashes throughout validation, rejecting source-alias substitutions and detecting late package-file additions.
@@ -12,6 +22,10 @@
 - Adds guarded materialization of an absent, already-verified combined EXR for native diagnostics, with linear interpretation and dimension checks; source saving and repair of invalid resident images are not performed.
 - Extends separate-source Stage B volume assembly to accept a hash-bound explicit receipt/master/strength association when no saved World association is present, while rejecting conflicts and retaining producer/source validation.
 - Extends decoded delivery checks for declared ETC1S or UASTC material profiles and paired Simple/Advanced volume records, including optional Advanced source-ceiling proof validation. Existing material codec defaults, RGBD lightmap encoding and producer policies remain unchanged.
+
+## Blender exporter 3.3.49 (28 October 2026)
+
+- Adds audited legacy image dependency cleanup to portable volume relocation. Explicit image-name/hash substitutions preserve protected physical, baked-preview and World graphs plus all non-image scene state, and retain immutable parent receipts without recapturing volumes.
 
 ## Blender exporter 3.3.48 (28 October 2026)
 
