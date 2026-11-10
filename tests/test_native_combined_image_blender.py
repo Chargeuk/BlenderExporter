@@ -21,7 +21,7 @@ import babylon_js
 from babylon_js.environment_tools.recipe_cli import native_combined_image
 
 assert Path(babylon_js.__file__).resolve().parent == args.addon_source.resolve()
-assert tuple(babylon_js.bl_info['version']) == (3, 3, 58)
+assert tuple(babylon_js.bl_info['version']) == (3, 3, 60)
 if args.require_registered:
     assert bpy.ops.export.bjs.get_rna_type().identifier
 sha = lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()

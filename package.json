@@ -1,12 +1,12 @@
 {
   "name": "Blender_JSON_Exporter",
-  "version": "3.3.58",
+  "version": "3.3.60",
   "description": "Writes .babylon file from Blender file",
   "main": "",
   "repository": {
     "url": "https://github.com/Chargeuk/BlenderExporter"
   },
-  "readme": "https://github.com/Chargeuk/BlenderExporter/blob/feature/rgbd-lightmaps/readme.md",
+  "readme": "https://github.com/Chargeuk/BlenderExporter/blob/master/readme.md",
   "license": "(Apache-2.0)",
   "scripts": {
     "Blender-ZIP": "node buildZipFile.js"
