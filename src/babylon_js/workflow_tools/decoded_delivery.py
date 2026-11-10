@@ -197,22 +197,159 @@ def model_contract(model,marker,lightmap_name,tint_name=None):
     return {'marker':marker,'minimum_divisor':bound,'tint_strength':adjustment['strength'] if tint_name else 0}
 
 
+def bind_input(path,digest,inputs):
+    """Freeze the first observed identity instead of replacing an earlier hash."""
+    key=str(Path(path).resolve())
+    if key in inputs and inputs[key]!=digest:raise ValueError('Input changed after its identity was bound: '+key)
+    inputs[key]=digest
+
+
+def bound_json(path,inputs):
+    path=Path(path).resolve();data=path.read_bytes()
+    bind_input(path,hashlib.sha256(data).hexdigest(),inputs)
+    return json.loads(data.decode('utf-8-sig'))
+
+
+def verify_assembly_inventory(proof):
+    """Repeat the exact file-set check after decoding, including late additions."""
+    if proof is None:return
+    package=Path(proof['package'])
+    actual={p.relative_to(package).as_posix() for p in package.rglob('*') if p.is_file()}
+    if actual!=set(proof['final_files']):raise ValueError('Assembly final file inventory differs')
+
+
+def verify_delivery_model(model_path,report_path,assembly,base,inputs):
+    """Bind exact model bytes to conversion, or to the guarded two-stage chain.
+
+    Assembly is optional and contains hash-bound ``report`` and ``config``
+    artifacts. Original Stage A receipts are never rewritten or reinterpreted
+    as describing Stage B bytes. This verifies retained provenance, not Blender
+    reevaluation or numeric/visual acceptance.
+    """
+    model_path=Path(model_path).resolve();report_path=Path(report_path).resolve()
+    report=bound_json(report_path,inputs);model=bound_json(model_path,inputs)
+    if report.get('status')!='passed':raise ValueError('Retained conversion report must have passed')
+    def remember(path,digest=None):
+        path=Path(path).resolve();actual=sha(path)
+        if digest is not None and actual!=digest:raise ValueError('Assembly dependency bytes changed: '+str(path))
+        bind_input(path,actual,inputs);return path
+    remember(model_path);remember(report_path)
+    delivered=[row for row in report.get('delivery_files',[]) if Path(row['path']).name==model_path.name]
+    if assembly is None:
+        if len(delivered)!=1 or delivered[0].get('sha256')!=sha(model_path):
+            raise ValueError('Actual model differs from completed conversion delivery proof')
+        return None,report.get('environment_lighting_volume',{})
+    if not isinstance(assembly,dict) or set(assembly)!={'report','config'}:
+        raise ValueError('Assembly requires exactly hash-bound report and config artifacts')
+    def artifact(value):
+        if (not isinstance(value,dict) or set(value)!={'path','sha256'} or not isinstance(value['path'],str) or not value['path']
+                or not isinstance(value['sha256'],str) or len(value['sha256'])!=64
+                or any(c not in '0123456789abcdef' for c in value['sha256'])):
+            raise ValueError('Assembly artifact requires path and lowercase SHA256')
+        return remember(Path(base)/value['path'],value['sha256'])
+    assembly_path=artifact(assembly['report']);config_path=artifact(assembly['config'])
+    proof=bound_json(assembly_path,inputs);config=bound_json(config_path,inputs)
+    spec=spec_from_file_location('bjs_decoded_volume_assembly',HERE.parent/'environment_tools/volume_assembly.py')
+    helper=module_from_spec(spec);spec.loader.exec_module(helper);remember(spec.origin)
+    helper.route(config)
+    source=remember(helper.source_path(config,config_path),config['source_sha256'])
+    if (proof.get('kind')!='separate-source-volume-assembly-v1' or proof.get('status')!='assembled'
+            or proof.get('source_saved') is not False or proof.get('source_sha256')!=sha(source)
+            or proof.get('config_sha256')!=sha(config_path) or proof.get('model_sha256')!=sha(model_path)
+            or Path(proof.get('model','')).name!=model_path.name or config.get('model')!=model_path.name):
+        raise ValueError('Assembly source/config/model identity differs')
+    stage_a=proof['stage_a'];stage=Path(stage_a['path']).resolve()
+    boundary_path=remember(stage/'STAGE_A_BOUNDARY.json',stage_a['boundary_sha256'])
+    boundary,conversion=helper.verify_boundary(stage,config,config_path,sha(source))
+    if (stage_a.get('immutable_conversion_report_sha256')!=sha(report_path)
+            or conversion['conversion_report_sha256']!=sha(report_path)
+            or stage_a.get('model_sha256')!=conversion['model_sha256']):
+        raise ValueError('Assembly immutable Stage A conversion association differs')
+    remember(stage/(Path(config['model']).stem+'.ktx-report.json'),sha(report_path))
+    remember(stage/'selection-settings.json',conversion['selection_sha256'])
+    before=helper.checked_path(stage,config['model'])
+    descriptor=helper.metadata_only_delta(bound_json(before,inputs),model)
+    package=model_path.parent
+    files=proof.get('final_files')
+    if not isinstance(files,dict) or not files:raise ValueError('Assembly final file inventory required')
+    actual={p.relative_to(package).as_posix() for p in package.rglob('*') if p.is_file()}
+    if actual!=set(files):raise ValueError('Assembly final file inventory differs')
+    for name,digest in files.items():remember(helper.checked_path(package,name),digest)
+    for name,digest in conversion['files'].items():
+        remember(helper.checked_path(stage,name),digest)
+        if name!=config['model']:remember(helper.checked_path(package,name),digest)
+    # Recompute closure without importing the Blender-only package initializer.
+    refs={owner[key] for owner,key,_,_ in core.texture_fields(model)}
+    refs.update(('environment.env',descriptor['texture'],descriptor['advanced']['texture']))
+    if any(n.get('name','').lower()=='hasskyboxbasis' for n in model.get('meshes',[])):refs.add('cubemap.basis')
+    closure={name:sha(helper.checked_path(package,name)) for name in sorted(refs)}
+    if closure!=proof.get('closure'):raise ValueError('Assembly runtime closure differs')
+    stage_b=proof.get('stage_b',{});exported=stage_b.get('report',{})
+    if (stage_b.get('api')!='environment_lighting_volume.export_volume'
+            or stage_b.get('model_delta')!='only hasenv.metadata.kadshowEnvironmentLightingVolume'
+            or exported.get('status')!='passed' or exported.get('advanced',{}).get('status')!='passed'):
+        raise ValueError('Assembly guarded Stage B volume report required')
+    for node,row in ((descriptor,exported),(descriptor['advanced'],exported['advanced'])):
+        if row.get('texture')!=node['texture'] or row.get('textureSha256')!=closure[node['texture']]:
+            raise ValueError('Assembly volume metadata/report bytes differ')
+    # Shared diffuse/volume validation must not attest to altered producer inputs.
+    recipe_spec=spec_from_file_location('bjs_decoded_assembly_recipe',HERE.parent/'environment_tools/recipe_cli.py')
+    recipe_helper=module_from_spec(recipe_spec);recipe_spec.loader.exec_module(recipe_helper);remember(recipe_spec.origin)
+    remember(HERE.parent/'environment_tools/common.py')
+    root=Path(config.get('package_root',config_path.parent)).resolve();bound={}
+    for row in config.get('input_bindings',[]):remember(row['source'],row['sha256'])
+    for row in config.get('bound_dependencies',[]):
+        dependency=recipe_helper.resolve_input(root,config,row['path'])
+        remember(dependency,row['sha256']);bound[str(dependency)]=row['sha256']
+    receipt_path=Path(exported.get('receipt','')).resolve()
+    if str(receipt_path) not in bound:raise ValueError('Assembly volume receipt requires hash-bound config dependency')
+    receipt=bound_json(remember(receipt_path,bound[str(receipt_path)]),inputs)
+    volume,relocation=_volume_contract_helpers();volume.validate_record(receipt)
+    volume_source=relocation.package_paths(receipt,receipt_path)
+    for key in ('scene','scopeRecipe','combined','combinedProvenance','reference'):
+        remember(volume_source[key],volume_source[key+'Sha256'])
+    if (Path(volume_source['scene']).resolve()!=source or volume_source['sceneSha256']!=sha(source)
+            or volume_source['referenceSha256']!=conversion['capture_sha256']):
+        raise ValueError('Assembly volume receipt source/ENV association differs')
+    # Match the original ENV input without interpreting Blender-relative // as a UNC path.
+    capture=conversion['environment_options']['image']
+    capture_path=(source.parent/capture[2:]).resolve() if capture.startswith('//') else Path(capture).resolve()
+    if capture_path!=Path(volume_source['reference']).resolve():raise ValueError('Assembly ENV/reference path association differs')
+    remember(capture_path,conversion['capture_sha256'])
+    for capture,row in ((receipt,exported),(receipt['advanced'],exported['advanced'])):
+        master=remember(receipt_path.parent/capture['master'],capture['masterSha256'])
+        metrics=row.get('metrics',{})
+        if Path(row.get('source','')).resolve()!=master or metrics.get('source_sha256')!=sha(master):
+            raise ValueError('Assembly volume receipt/master association differs')
+        remember(metrics['prepared'],metrics['prepared_sha256'])
+    remember(receipt_path.parent/receipt['advanced']['provenance'],receipt['advanced']['provenanceSha256'])
+    volume_model_contract(model,receipt,closure[descriptor['texture']],descriptor['minDivisor'],
+        closure[descriptor['advanced']['texture']],descriptor['advanced']['minDivisor'])
+    return {'kind':proof['kind'],'report':str(assembly_path),'report_sha256':sha(assembly_path),
+        'config':str(config_path),'config_sha256':sha(config_path),'source':str(source),'source_sha256':sha(source),
+        'stage_a_boundary':str(boundary_path),'stage_a_model_sha256':conversion['model_sha256'],
+        'stage_b_model_sha256':sha(model_path),'immutable_conversion_report_sha256':sha(report_path),
+        'model_delta':stage_b['model_delta'],'closure':closure,'package':str(package),'final_files':dict(files),
+        'limits':'Retained two-stage chain and exact metadata delta; no scene reevaluation, numeric or visual acceptance.'},exported
+
+
 def validate_delivery(recipe_path,output,ktx):
-    recipe_path=Path(recipe_path).resolve();recipe=read_json(recipe_path);base=recipe_path.parent
+    recipe_path=Path(recipe_path).resolve();source_hashes={};recipe=bound_json(recipe_path,source_hashes);base=recipe_path.parent
     if recipe.get('schema_version')!=1:raise ValueError('Expected decoded-delivery recipe schema 1')
     def path(value):return (base/value).resolve()
     output=Path(output).resolve()
     if output.exists():raise ValueError('Use a new diagnostic output directory')
-    ktx=Path(ktx).resolve();source_hashes={str(recipe_path):sha(recipe_path),str(ktx):sha(ktx)}
+    ktx=Path(ktx).resolve();bind_input(ktx,sha(ktx),source_hashes)
     def remember(value):
-        resolved=path(value);source_hashes[str(resolved)]=sha(resolved);return resolved
-    report_path=remember(recipe['conversion_report']);report=read_json(report_path)
+        resolved=path(value);bind_input(resolved,sha(resolved),source_hashes);return resolved
+    report_path=remember(recipe['conversion_report']);report=bound_json(report_path,source_hashes)
     if report.get('status')!='passed':raise ValueError('Retained conversion report must have passed')
-    model_path=remember(recipe['model']);model=read_json(model_path)
-    delivered_models=[row for row in report.get('delivery_files',[]) if Path(row['path']).name==model_path.name]
-    if len(delivered_models)!=1 or delivered_models[0]['sha256']!=sha(model_path):raise ValueError('Actual model differs from completed conversion delivery proof')
+    model_path=remember(recipe['model']);model=bound_json(model_path,source_hashes)
+    assembly_proof,_=verify_delivery_model(model_path,report_path,recipe.get('assembly'),base,source_hashes)
     source_blend=remember(recipe['source_blend'])
     if sha(source_blend)!=recipe['source_sha256']:raise ValueError('Declared source blend hash differs')
+    if assembly_proof and (str(source_blend)!=assembly_proof['source'] or recipe['source_sha256']!=assembly_proof['source_sha256']):
+        raise ValueError('Decoded source differs from assembled source')
     lightmap=recipe['lightmap'];tint=recipe.get('tint')
     model_info=model_contract(model,recipe['marker'],Path(lightmap['ktx']).name,Path(tint['ktx']).name if tint else None)
     version=subprocess.run([str(ktx),'--version'],capture_output=True,text=True,check=True,**_process_options()).stdout.strip()
@@ -224,9 +361,9 @@ def validate_delivery(recipe_path,output,ktx):
         if len(matches)!=1:raise ValueError('Unique actual conversion texture record required')
         row=matches[0]
         if sha(compressed)!=row['output_sha256']:raise ValueError('Actual compressed delivery hash differs from conversion report')
-        prepared_source=Path(row['source_path']).resolve();source_hashes[str(prepared_source)]=sha(prepared_source)
+        prepared_source=Path(row['source_path']).resolve();bind_input(prepared_source,sha(prepared_source),source_hashes)
         if sha(prepared_source)!=row['source_sha256']:raise ValueError('Exporter preparation source changed')
-        prepared=Path(row['prepared']).resolve();source_hashes[str(prepared)]=sha(prepared)
+        prepared=Path(row['prepared']).resolve();bind_input(prepared,sha(prepared),source_hashes)
         if sha(prepared)!=row['prepared_sha256']:raise ValueError('Retained prepared pixels changed')
         origin='bottom-left' if row['flip_y'] else 'top-left'
         if item.get('image_origin')!=origin:raise ValueError('Logical image origin differs from retained exporter flip_y preparation')
@@ -261,7 +398,7 @@ def validate_delivery(recipe_path,output,ktx):
     albedo=core.resize_lightmap(albedo,{'size':target,'color_space':'linear'},True)[...,:3]
     labels=top_left(np.load(mask_path,allow_pickle=False),lightmap['mask_origin'])
     if labels.ndim!=2 or not np.isfinite(labels).all() or (labels<0).any():raise ValueError('Expected nonnegative native label/owned mask array')
-    ownership_path=remember(lightmap['ownership_receipt']);ownership=read_json(ownership_path)
+    ownership_path=remember(lightmap['ownership_receipt']);ownership=bound_json(ownership_path,source_hashes)
     if (ownership.get('method')!='native-island-id' or ownership.get('source_sha256')!=recipe['source_sha256']
             or ownership.get('geometry_sha256')!=recipe['geometry_sha256']):raise ValueError('Native source/geometry ownership differs')
     native_path=remember(str(ownership_path.parent/'native_island_ids.npy'));catalogue_path=remember(str(ownership_path.parent/'islands.json'))
@@ -273,7 +410,7 @@ def validate_delivery(recipe_path,output,ktx):
         raw_path=remember(str(ownership_path.parent/(mode+'_raw.npy')))
         if sha(raw_path)!=ownership['raw_sha256'][mode]:raise ValueError('Native transport bytes changed')
         raw.append(np.load(raw_path,allow_pickle=False))
-    native_labels,native_report=validate_native_ids(native,read_json(catalogue_path),*raw)
+    native_labels,native_report=validate_native_ids(native,bound_json(catalogue_path,source_hashes),*raw)
     # Blender/native arrays are top-left here; the explicit mask origin must reproduce these exact labels.
     if not np.array_equal(labels,native_labels):raise ValueError('Supplied comparison labels differ from actual native IDs')
     mask=np.repeat((labels>0)[...,None],4,axis=2).astype(np.float32)
@@ -284,8 +421,8 @@ def validate_delivery(recipe_path,output,ktx):
     if tint:
         actual,reference,tint_record=decode(tint,'tint');snapshot=remember(tint['uv_snapshot']);expected=remember(tint['expected'])
         settings=dict(tint.get('sampling',{}),strength=model_info['tint_strength'],image_origin='top-left',assume_srgb=True,alpha_mode='straight')
-        tint_record['decoded_filter_diagnostic']=diagnose(read_json(snapshot),actual,read_json(expected),**settings)
-        tint_record['reference_filter_diagnostic']=diagnose(read_json(snapshot),reference,read_json(expected),**settings)
+        tint_record['decoded_filter_diagnostic']=diagnose(bound_json(snapshot,source_hashes),actual,bound_json(expected,source_hashes),**settings)
+        tint_record['reference_filter_diagnostic']=diagnose(bound_json(snapshot,source_hashes),reference,bound_json(expected,source_hashes),**settings)
         bindings['tint']=tint_record
     atlas_records=[]
     for item in recipe.get('colour_atlases',[]):
@@ -303,7 +440,7 @@ def validate_delivery(recipe_path,output,ktx):
     bindings['scalar_materials']=scalar_records
     equivalence=None
     if recipe.get('geometry_equivalence_receipt'):
-        equivalence_path=remember(recipe['geometry_equivalence_receipt']);equivalence=read_json(equivalence_path)
+        equivalence_path=remember(recipe['geometry_equivalence_receipt']);equivalence=bound_json(equivalence_path,source_hashes)
         if (not equivalence.get('geometry_and_UV1_untouched') or equivalence.get('ambiguous_shared_corner_assignments')!=0
                 or equivalence.get('exact_float32_UV2_corner_mismatches')!=[] or not equivalence.get('matched_corner_count',0)>0):
             raise ValueError('Connected/runtime floor requires existing exact UV/geometry parity evidence')
@@ -319,7 +456,7 @@ def validate_delivery(recipe_path,output,ktx):
     continuous_surface=None
     if recipe.get('continuous_surface_equivalence'):
         from surface_equivalence import validate_surface_evidence
-        proof_path=remember(recipe['continuous_surface_equivalence']);proof=read_json(proof_path)
+        proof_path=remember(recipe['continuous_surface_equivalence']);proof=bound_json(proof_path,source_hashes)
         checked=validate_surface_evidence(proof,source_sha256=recipe['source_sha256'],native_geometry_sha256=recipe['geometry_sha256'])
         if (set(proof['runtime_mesh_names'])!={node['name'] for node in runtime}
                 or checked['runtime_triangle_count']!=sum(len(node['indices'])//3 for node in runtime)):
@@ -327,9 +464,9 @@ def validate_delivery(recipe_path,output,ktx):
         continuous_surface={'proof':proof,'validation':checked,'file':str(proof_path),'sha256':sha(proof_path)}
     generated={str(Path(row[key])):sha(row[key]) for row in records for key in ('reference_array','decoded_array','raw')}
     for tool in (Path(__file__),HERE/'uv_tint_filter.py',HERE.parent/'ktx_conversion.py',HERE.parent/'environment_tools/native_ownership.py'):
-        source_hashes[str(tool.resolve())]=sha(tool)
+        bind_input(tool,sha(tool),source_hashes)
     contract={'schema_version':1,'kind':'decoded-delivery-diffuse-contract','source_sha256':recipe['source_sha256'],
-        'geometry_sha256':recipe['geometry_sha256'],'model':str(model_path),'model_sha256':sha(model_path),'model_contract':model_info,
+        'assembly_proof':assembly_proof,'geometry_sha256':recipe['geometry_sha256'],'model':str(model_path),'model_sha256':sha(model_path),'model_contract':model_info,
         'runtime_mesh_count':len(runtime),'runtime_triangle_count':sum(len(node['indices'])//3 for node in runtime),
         'runtime_mesh_names':[node['name'] for node in runtime],'excluded_indexed_meshes':[node['name'] for node in indexed if node not in runtime],
         'runtime_selection':'Explicit project runtime_mesh_names' if mesh_names is not None else 'Model indexed meshes with own isVisible/isEnabled and positive visibility; no application culling equivalence claim',
@@ -338,9 +475,10 @@ def validate_delivery(recipe_path,output,ktx):
         'display':{'shader_gamma':1/2.2,'view_transform':'Raw','exposure':0,'gamma':1,'look':'None'},
         'limits':'Local diffuse reconstruction, not KaDshow runtime/PBR validation; original glass/background shown unchanged under Raw outside codec objective. Finite UV tint probes and camera views cannot establish exhaustive seam/coverage acceptance.'}
     if continuous_surface:
-        for tool in (HERE/'surface_equivalence.py',HERE/'uv_audit.py'):source_hashes[str(tool.resolve())]=sha(tool)
+        for tool in (HERE/'surface_equivalence.py',HERE/'uv_audit.py'):bind_input(tool,sha(tool),source_hashes)
     for filename,digest in source_hashes.items():
         if sha(filename)!=digest:raise ValueError('Input changed during decode: '+filename)
+    verify_assembly_inventory(assembly_proof)
     save(output/'delivery-contract.json',contract)
     return contract
 
@@ -619,41 +757,42 @@ def _volume_encoder_policy(row,prepared,compressed,*,advanced=False):
 
 def validate_volumes(recipe_path,output,ktx):
     """Offline paired volume decode; source/capture/export proofs, never runtime."""
-    recipe_path=Path(recipe_path).resolve();recipe=read_json(recipe_path);base=recipe_path.parent
+    recipe_path=Path(recipe_path).resolve();inputs={};recipe=bound_json(recipe_path,inputs);base=recipe_path.parent
     required={'schema_version','kind','model','conversion_report','receipt','capture_config','capture_inputs',
               'source_blend','world_image','volumes','thresholds'}
-    if (not isinstance(recipe,dict) or set(recipe)!=required or type(recipe['schema_version']) is not int or recipe['schema_version']!=1
+    if (not isinstance(recipe,dict) or not required<=set(recipe)<=required|{'assembly'} or type(recipe['schema_version']) is not int or recipe['schema_version']!=1
             or recipe['kind']!='decoded-volume-delivery' or not isinstance(recipe['volumes'],dict)
             or set(recipe['volumes'])!={'simple','advanced'} or not isinstance(recipe['thresholds'],dict)
             or set(recipe['thresholds'])!={'simple','advanced'}):
         raise ValueError('Expected explicit paired decoded-volume-delivery schema1 recipe')
     output=Path(output).resolve()
     if output.exists():raise ValueError('Use a new volume validation output directory')
-    ktx=Path(ktx).resolve();inputs={str(recipe_path):sha(recipe_path),str(ktx):sha(ktx)}
+    ktx=Path(ktx).resolve();bind_input(ktx,sha(ktx),inputs)
     def remember(path,digest):
         path=Path(path).resolve()
         if not isinstance(digest,str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest):
             raise ValueError('Explicit lowercase SHA256 required for every volume input')
         actual=sha(path)
         if actual!=digest:raise ValueError('Volume input differs from sealed SHA256: '+str(path))
-        inputs[str(path)]=actual;return path
+        bind_input(path,actual,inputs);return path
     def artifact(value):
         if not isinstance(value,dict) or set(value)!={'path','sha256'} or not isinstance(value['path'],str) or not value['path']:
             raise ValueError('Volume artifact requires exactly path and sha256')
         return remember(base/value['path'],value['sha256'])
     paths={name:artifact(recipe[name]) for name in ('model','conversion_report','receipt','capture_config','capture_inputs','source_blend','world_image')}
-    model=read_json(paths['model']);report=read_json(paths['conversion_report']);receipt=read_json(paths['receipt'])
+    model=bound_json(paths['model'],inputs);report=bound_json(paths['conversion_report'],inputs);receipt=bound_json(paths['receipt'],inputs)
     volume,relocation=_volume_contract_helpers();volume.validate_record(receipt)
     if 'advanced' not in receipt:raise ValueError('Volume validation requires both native Simple and Advanced companions')
     if report.get('status')!='passed':raise ValueError('Volume conversion report must have passed')
-    delivered=[row for row in report.get('delivery_files',[]) if Path(row['path']).name==paths['model'].name]
-    if len(delivered)!=1 or delivered[0].get('sha256')!=sha(paths['model']):raise ValueError('Actual model differs from final conversion delivery proof')
+    assembly_proof,exported=verify_delivery_model(paths['model'],paths['conversion_report'],recipe.get('assembly'),base,inputs)
+    if assembly_proof and (str(paths['source_blend'])!=assembly_proof['source'] or sha(paths['source_blend'])!=assembly_proof['source_sha256']):
+        raise ValueError('Volume source differs from assembled source')
     source=relocation.package_paths(receipt,paths['receipt']);historical_source=receipt['source']
     if receipt.get('pathBase')=='receipt':
         lineage=receipt.get('relocation',{})
         original_path=remember(paths['receipt'].parent/lineage['originalReceipt'],lineage['originalReceiptSha256'])
         proof_path=remember(paths['receipt'].parent/lineage['proof'],lineage['proofSha256'])
-        original=read_json(original_path);proof=read_json(proof_path);expected=copy.deepcopy(original)
+        original=bound_json(original_path,inputs);proof=bound_json(proof_path,inputs);expected=copy.deepcopy(original)
         expected['source']=receipt['source']
         for name in ('pathBase','packageRoot','relocation'):expected[name]=receipt[name]
         if (lineage.get('version')!=1 or expected!=receipt or proof.get('version')!=1
@@ -666,11 +805,11 @@ def validate_volumes(recipe_path,output,ktx):
         remember(source[name],source[name+'Sha256'])
     if paths['source_blend']!=Path(source['scene']).resolve():raise ValueError('Volume source blend association differs')
     if sha(paths['world_image'])!=source['worldImageSha256']:raise ValueError('Volume physical World image hash differs')
-    signature=read_json(paths['capture_inputs'])
+    signature=bound_json(paths['capture_inputs'],inputs)
     if signature.get('source')!=historical_source or signature.get('configSha256')!=sha(paths['capture_config']):
         raise ValueError('Capture signature/config/source association differs')
     advanced=receipt['advanced'];provenance_path=remember(paths['receipt'].parent/advanced['provenance'],advanced['provenanceSha256'])
-    provenance=read_json(provenance_path)
+    provenance=bound_json(provenance_path,inputs)
     if (provenance.get('source')!=historical_source or provenance.get('acceptedCaptureInputsSha256')!=sha(paths['capture_inputs'])
             or provenance.get('directionOrder')!=volume.DIRECTION_ORDER
             or provenance.get('panoramaConvention')!=volume.PANORAMA_CONVENTION
@@ -679,14 +818,13 @@ def validate_volumes(recipe_path,output,ktx):
     if 'calibration' in provenance or 'calibrationSha256' in provenance:
         filename=provenance.get('calibration','')
         if not filename or Path(filename).name!=filename:raise ValueError('Native orientation calibration must be beside provenance')
-        calibration=read_json(remember(provenance_path.parent/filename,provenance.get('calibrationSha256')))
+        calibration=bound_json(remember(provenance_path.parent/filename,provenance.get('calibrationSha256')),inputs)
         if (calibration.get('status')!='passed' or calibration.get('panoramaConvention')!=volume.PANORAMA_CONVENTION
                 or calibration.get('directionOrder')!=volume.DIRECTION_ORDER
                 or calibration.get('cameraEulerBlender')!=[math.pi/2,0,0]
                 or [row.get('direction') for row in calibration.get('samples',[])]!=volume.DIRECTION_ORDER
                 or not all(row.get('passed') is True for row in calibration['samples'])):
             raise ValueError('Retained native six-axis panorama calibration differs')
-    exported=report.get('environment_lighting_volume',{})
     if Path(exported.get('receipt','')).resolve()!=paths['receipt']:raise ValueError('Export report volume receipt association differs')
     items={};divisors={};rows={};profiles={};policies={};masters={};preparations={}
     for name,dimensions,capture,filename in (('simple',[128,128],receipt,volume.FILENAME),
@@ -747,12 +885,12 @@ def validate_volumes(recipe_path,output,ktx):
             'comparison':comparison,'actual_official_decode_alpha_proof':post_decode_alpha}
     for tool in (Path(__file__),HERE.parent/'ktx_conversion.py',HERE.parent/'environment_lighting_volume.py',
                  HERE.parent/'spatial_lighting.py',HERE.parent/'environment_tools/volume_relocation.py',HERE/'volume_audit.py'):
-        inputs[str(tool.resolve())]=sha(tool)
+        bind_input(tool,sha(tool),inputs)
     for path,digest in inputs.items():
         if sha(path)!=digest:raise ValueError('Volume input changed during validation: '+path)
     failures=[name+': '+failure for name,row in records.items() for failure in row['comparison']['failures']]
     result={'schema_version':1,'kind':'decoded-volume-delivery-validation','status':'failed' if failures else 'passed',
-        'model':str(paths['model']),'model_sha256':sha(paths['model']),'source_sha256':sha(paths['source_blend']),
+        'assembly_proof':assembly_proof,'model':str(paths['model']),'model_sha256':sha(paths['model']),'source_sha256':sha(paths['source_blend']),
         'receipt_sha256':sha(paths['receipt']),'model_contract':model_info,'volumes':records,'failures':failures,
         'inputs':inputs,'generated':generated,'ktx_version':version,'thresholds':recipe['thresholds'],
         'image_reader':{'backend':'OpenImageIO.ImageInput' if sys.modules.get('OpenImageIO') else 'existing _linear/png_rgba fallback',
@@ -760,6 +898,7 @@ def validate_volumes(recipe_path,output,ktx):
             'exr':'named native RGB float32, top-left rows; no color transform',
             'png':'raw straight RGBA8 divisor bytes; oiio:UnassociatedAlpha=1, reorient=0, RawColor=1 when OIIO is available'},
         'limits':'Offline base-level texel/profile/provenance checks only. Encoder quality/Zstd are retained-command receipt proof, not inferred from binary. No Blender capture reevaluation, browser or KaDshow runtime/normal/bounds/sampling/visual acceptance claim.'}
+    verify_assembly_inventory(assembly_proof)
     save(output/'volume-delivery-validation.json',result)
     if failures:raise ValueError('Decoded volume validation failed: '+'; '.join(failures))
     return result

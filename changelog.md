@@ -1,5 +1,10 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.59 (31 October 2026)
+
+- Hardens decoded-delivery provenance checks by binding parsed JSON bytes to their first observed hashes throughout validation, rejecting source-alias substitutions and detecting late package-file additions.
+- Verifies optional Stage A/Stage B assembly receipts, config-bound volume dependencies and final package inventory while preserving the original Stage A conversion report. Existing decoded volume thresholds and producer policies are unchanged.
+
 ## Blender exporter 3.3.58 (29 October 2026)
 
 - Preserves optional unassigned AO slots in native transport diagnostics only when the saved appearance graph validates that AO is disabled; other missing or active-image cases remain errors.
