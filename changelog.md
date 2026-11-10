@@ -4,6 +4,7 @@
 
 - Combines the 3.3.58 exporter fixes with audited legacy image dependency cleanup during portable volume relocation.
 - Explicit image-name and hash substitutions preserve the protected lighting graphs, non-image scene state and original volume receipts without recapturing volumes.
+- Validates cleanup lineage in offline delivery checks and publishes a derivative receipt only after validation succeeds. Default paired-volume checks can use hash-bound retained artifacts after private encoder staging files are removed.
 
 ## Blender exporter 3.3.58 (29 October 2026)
 

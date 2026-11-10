@@ -91,7 +91,7 @@ class CleanupContracts(unittest.TestCase):
         self.objects=Items([SimpleNamespace(name='Visible',material_slots=[SimpleNamespace(material=self.legacy)])])
         self.data=SimpleNamespace(filepath=str(self.source),is_dirty=False,images=self.images,materials=self.materials,
                                   worlds=[self.world],scenes=[self.scene],node_groups=[],objects=self.objects)
-        self.saved=[];self.bad_state=False
+        self.saved=[];self.validated=[];self.bad_state=False
         def save(**kwargs):
             self.saved.append(kwargs);Path(kwargs['filepath']).write_bytes(b'audited cleaned source')
             self.data.filepath=kwargs['filepath'];return {'FINISHED'}
@@ -122,6 +122,7 @@ class CleanupContracts(unittest.TestCase):
         source=helper.package_paths(record,receipt_path)
         for key in ('scene','scopeRecipe','combined','combinedProvenance','reference'):
             if sha(source[key])!=source[key+'Sha256']:raise ValueError('Capture input changed')
+        self.validated.append(receipt_path)
 
     def run_cleanup(self):
         self.config_path.write_text(json.dumps(self.config),encoding='utf8')
@@ -137,15 +138,57 @@ class CleanupContracts(unittest.TestCase):
         self.assertEqual(len(self.saved),1);self.assertEqual(self.node.image,self.new)
         self.assertEqual([image.name for image in self.images],['current'])
         self.assertEqual(self.source.read_bytes(),b'accepted portable parent')
-        proof=json.loads(self.proof_path.read_text());cleanup=proof['dependencyCleanup']
+        self.assertEqual(self.proof_path.read_bytes(), self.original_proof)
+        current=json.loads(self.receipt.read_text())
+        derivative_proof = self.base/current['relocation']['proof']
+        self.assertNotEqual(derivative_proof, self.proof_path)
+        proof=json.loads(derivative_proof.read_text());cleanup=proof['dependencyCleanup']
         self.assertEqual((self.base/cleanup['parentReceipt']).read_bytes(),self.original_receipt)
         self.assertEqual((self.base/cleanup['parentProof']).read_bytes(),self.original_proof)
-        current=json.loads(self.receipt.read_text())
         self.assertEqual(current['source']['sceneSha256'],sha(self.target))
         helper.validate_dependency_cleanup_lineage(current,proof,self.base)
         (self.base/cleanup['parentProof']).write_text('{}')
         with self.assertRaisesRegex(ValueError,'parent evidence'):
             helper.validate_dependency_cleanup_lineage(current,proof,self.base)
+
+    def test_failed_receipt_publication_preserves_prior_pair_and_allows_retry(self):
+        prior_evidence = set(self.base.iterdir())
+
+        def fail_replace(candidate, destination):
+            self.assertEqual(destination, self.receipt)
+            self.assertEqual(self.validated, [self.receipt, candidate])
+            self.assertEqual(self.receipt.read_bytes(), self.original_receipt)
+            self.assertEqual(self.proof_path.read_bytes(), self.original_proof)
+            self.assertTrue(self.target.is_file())
+            raise PermissionError('injected receipt publication failure')
+
+        with patch.object(Path, 'replace', autospec=True, side_effect=fail_replace):
+            with self.assertRaisesRegex(PermissionError, 'injected receipt publication failure'):
+                self.run_cleanup()
+        self.assertEqual(set(self.base.iterdir()), prior_evidence)
+        self.assertFalse(self.target.exists())
+        self.assertFalse(self.target.with_name(self.target.name+'.cleanup.lock').exists())
+        self.assertEqual(self.receipt.read_bytes(), self.original_receipt)
+        self.assertEqual(self.proof_path.read_bytes(), self.original_proof)
+
+        # A new Blender invocation opens the untouched parent again.
+        self.data.filepath = str(self.source)
+        self.images.append(self.old)
+        self.node.image = self.old
+        self.run_cleanup()
+        self.assertTrue(self.target.is_file())
+        self.assertEqual(self.proof_path.read_bytes(), self.original_proof)
+
+    def test_concurrent_target_reservation_is_left_untouched(self):
+        lock = self.target.with_name(self.target.name+'.cleanup.lock')
+        lock.write_bytes(b'other cleanup owns target')
+        with self.assertRaisesRegex(ValueError, 'output is reserved'):
+            self.run_cleanup()
+        self.assertEqual(lock.read_bytes(), b'other cleanup owns target')
+        self.assertFalse(self.receipt.with_name(self.receipt.name+'.cleanup.lock').exists())
+        self.assertFalse(self.saved)
+        self.assertEqual(self.receipt.read_bytes(), self.original_receipt)
+        self.assertEqual(self.proof_path.read_bytes(), self.original_proof)
 
     def test_protected_material_rejects_before_save(self):
         self.protected.node_tree.nodes.append(Node('Protected image',self.old))

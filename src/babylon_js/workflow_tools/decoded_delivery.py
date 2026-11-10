@@ -561,13 +561,21 @@ def _volume_encoder_policy(row,prepared,compressed,*,advanced=False):
             or Path(command[-2]).name!=prepared.name):
         raise ValueError('Retained volume encoder command must declare RGBA8 UNORM/linear/UASTC4/Zstd3 with no mipmaps')
     prepared=Path(prepared).resolve();compressed=Path(compressed).resolve()
-    original_prepared=Path(command[-2]).resolve();encoded=Path(command[-1]).resolve()
-    if (not original_prepared.is_file() or sha(original_prepared)!=sha(prepared)
-            or sha(compressed)!=row.get('textureSha256')):
+    original_prepared=Path(command[-2]);encoded=Path(command[-1])
+    prepared_sha=sha(prepared);compressed_sha=sha(compressed)
+    if compressed_sha!=row.get('textureSha256'):
         raise ValueError('Retained volume encoder input/final texture differs')
-    guarded={str(original_prepared):sha(original_prepared),str(compressed):sha(compressed)}
+    source_ceiling='advancedAlphaPolicy' in row
+    strict_staging=source_ceiling or (not advanced and _volume_simple_mode(row)=='block-4x4')
+    guarded={str(prepared):prepared_sha,str(compressed):compressed_sha}
+    if strict_staging or original_prepared.exists() or original_prepared.is_symlink():
+        original_prepared=original_prepared.resolve()
+        if not original_prepared.is_file() or sha(original_prepared)!=prepared_sha:
+            raise ValueError('Retained volume encoder input/final texture differs')
+        guarded[str(original_prepared)]=prepared_sha
     alpha_policy=None
-    if 'advancedAlphaPolicy' in row:
+    if source_ceiling:
+        encoded=encoded.resolve()
         proof=row['advancedAlphaPolicy']
         if (not advanced or not isinstance(proof,dict) or proof.get('policy')!='source-ceiling'
                 or not str(proof.get('status','')).startswith('NATIVE_RGBA8_ALPHA_CEILING_VERIFIED')):
@@ -607,10 +615,13 @@ def _volume_encoder_policy(row,prepared,compressed,*,advanced=False):
         from volume_audit import validate_advanced_alpha
         alpha_policy=validate_advanced_alpha(row,pixels,after,Path(proof['after_raw']),compressed)
         guarded.update({str(original):sha(original),str(target):sha(target),str(Path(row['source']).resolve()):sha(row['source'])})
-    elif (encoded.name!=compressed.name or encoded.stem.endswith('_unconstrained') or not encoded.is_file()
-            or sha(encoded)!=row['textureSha256']):
+    elif encoded.name!=compressed.name or encoded.stem.endswith('_unconstrained'):
         raise ValueError('Retained default volume command must name actual final KTX')
-    else:guarded[str(encoded)]=sha(encoded)
+    elif strict_staging or encoded.exists() or encoded.is_symlink():
+        encoded=encoded.resolve()
+        if encoded.name!=compressed.name or not encoded.is_file() or sha(encoded)!=compressed_sha:
+            raise ValueError('Retained default volume command must name actual final KTX')
+        guarded[str(encoded)]=compressed_sha
     return {'proof':'Hash-bound retained exporter command, not quality-level inference from KTX binary',
         'command':command,'format':'R8G8B8A8_UNORM','assign_oetf':'linear','codec':'uastc',
         'uastc_quality':4,'zstd':3,'mipmaps':False,'flip_y':False,'alpha':'preserve',
@@ -661,6 +672,9 @@ def validate_volumes(recipe_path,output,ktx):
                 or proof.get('originalSourceSha256')!=original['source']['sceneSha256']
                 or proof.get('sourceSha256')!=source['sceneSha256']):
             raise ValueError('Portable volume historical/source lineage differs')
+        if 'dependencyCleanup' in proof:
+            parents=relocation.validate_dependency_cleanup_lineage(receipt,proof,paths['receipt'].parent)
+            for path,digest in parents.items():remember(path,digest)
         historical_source=original['source']
     for name in ('scene','scopeRecipe','combined','combinedProvenance','reference'):
         remember(source[name],source[name+'Sha256'])

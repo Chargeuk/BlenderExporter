@@ -3,7 +3,8 @@ import copy
 import hashlib
 import json
 import os
-from pathlib import Path
+from contextlib import ExitStack
+from pathlib import Path, PureWindowsPath
 
 
 # Optional nonappearance producer policies. Omission preserves every old property.
@@ -197,40 +198,65 @@ def validate_dependency_cleanup_config(config):
     return config
 
 
+def _cleanup_evidence_path(base, name):
+    if (type(name) is not str or not name or Path(name).name != name
+            or PureWindowsPath(name).name != name):
+        raise ValueError('Cleanup evidence must be beside receipt')
+    path = base / name
+    if path.resolve() != path:
+        raise ValueError('Cleanup evidence must be beside receipt')
+    return path
+
+
 def validate_dependency_cleanup_lineage(record,proof,base):
     """Bind the derivative to its unchanged portable parent, never a new capture."""
-    from common import sha
     cleanup=proof['dependencyCleanup']
     if type(cleanup) is not dict or cleanup.get('version')!=1:raise ValueError('Unsupported dependency cleanup lineage')
-    parents={}
+    base = Path(base).resolve()
+    parents={}; evidence={}
     for key in ('parentReceipt','parentProof'):
-        name=cleanup.get(key,'')
-        if type(name) is not str or not name or Path(name).name!=name:raise ValueError('Cleanup evidence must be beside receipt')
-        path=base/name
-        if not path.is_file() or sha(path)!=cleanup.get(key+'Sha256'):raise ValueError('Dependency cleanup parent evidence changed')
-        parents[key]=json.loads(path.read_text(encoding='utf-8-sig'))
+        path = _cleanup_evidence_path(base, cleanup.get(key))
+        if not path.is_file():
+            raise ValueError('Dependency cleanup parent evidence changed')
+        try:
+            data = path.read_bytes()
+        except OSError as error:
+            raise ValueError('Dependency cleanup parent evidence changed') from error
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != cleanup.get(key+'Sha256'):
+            raise ValueError('Dependency cleanup parent evidence changed')
+        parents[key] = json.loads(data.decode('utf-8-sig'))
+        evidence[str(path)] = digest
     parent=parents['parentReceipt'];parent_proof=parents['parentProof']
     if parent.get('pathBase')!='receipt' or parent.get('relocation',{}).get('proofSha256')!=cleanup['parentProofSha256']:
         raise ValueError('Dependency cleanup parent receipt/proof differ')
-    if (cleanup.get('sourceSha256')!=parent['source']['sceneSha256'] or
+    source_sha = cleanup.get('sourceSha256')
+    if (not isinstance(source_sha, str) or source_sha!=parent['source']['sceneSha256'] or
             cleanup.get('sceneIdentityBefore')!=parent_proof.get('sceneIdentity') or
-            parent_proof.get('sourceSha256')!=cleanup['sourceSha256'] or
+            parent_proof.get('sourceSha256')!=source_sha or
             cleanup.get('canonicalSceneIdentityBefore')!=proof.get('sceneIdentity')):
         raise ValueError('Dependency cleanup identity correspondence differs')
     expected=copy.deepcopy(parent)
     expected['source']['scene']=record['source']['scene']
     expected['source']['sceneSha256']=record['source']['sceneSha256']
+    parent_name = _cleanup_evidence_path(base, expected['relocation'].get('proof')).name
+    derivative_name = _cleanup_evidence_path(base, record['relocation'].get('proof')).name
+    new_name = 'dependency_cleanup_'+source_sha[:12]+'_derivative_proof.json'
+    if derivative_name not in (parent_name, new_name):
+        raise ValueError('Unsupported dependency cleanup derivative proof name')
+    expected['relocation']['proof'] = derivative_name
     expected['relocation']['proofSha256']=record['relocation']['proofSha256']
     if expected!=record:raise ValueError('Dependency cleanup changed accepted capture inputs or payload')
     if (parent_proof.get('originalSourceSha256')!=proof.get('originalSourceSha256') or
             parent_proof.get('originalReceiptSha256')!=proof.get('originalReceiptSha256')):
         raise ValueError('Dependency cleanup changed original capture lineage')
+    return evidence
 
 
 def cleanup_dependencies(config_path):
     """Retarget declared legacy image nodes and save one audited portable derivative."""
     import bpy
-    from common import sha,save_json
+    from common import sha
     from appearance import preview_identity
     from babylon_js.environment_lighting_volume import validate_record,validate_source
     from babylon_js.workflow_tools.inspect_blender import _render_candidates
@@ -247,17 +273,20 @@ def cleanup_dependencies(config_path):
     if bpy.data.is_dirty or any(i.is_dirty for i in bpy.data.images) or bpy.context.mode!='OBJECT':
         raise ValueError('Dependency cleanup requires a clean saved Object-mode source')
     if sha(source)!=cfg['source_sha256']:raise ValueError('Dependency cleanup source hash differs')
-    record=validate_record(json.loads(receipt.read_text(encoding='utf-8-sig')))
+    parent_receipt_bytes = receipt.read_bytes()
+    record=validate_record(json.loads(parent_receipt_bytes.decode('utf-8-sig')))
     if record.get('pathBase')!='receipt':raise ValueError('Dependency cleanup requires a validated portable parent')
     validate_source(bpy.context,record,receipt_path=receipt)
     before=scene_identity(bpy.context)
     base=receipt.parent;proof_path=base/record['relocation']['proof']
-    parent_receipt_bytes=receipt.read_bytes();parent_proof_bytes=proof_path.read_bytes()
-    parent_proof=json.loads(parent_proof_bytes)
+    parent_proof_bytes=proof_path.read_bytes()
+    if hashlib.sha256(parent_proof_bytes).hexdigest() != record['relocation']['proofSha256']:
+        raise ValueError('Volume relocation evidence changed: proof')
+    parent_proof=json.loads(parent_proof_bytes.decode('utf-8-sig'))
     if 'dependencyCleanup' in parent_proof:raise ValueError('Start cleanup from the original portable parent')
     prefix='dependency_cleanup_'+cfg['source_sha256'][:12]
     parent_receipt=base/(prefix+'_receipt.json');parent_proof_path=base/(prefix+'_proof.json')
-    if parent_receipt.exists() or parent_proof_path.exists():raise ValueError('Cleanup parent evidence already exists')
+    derivative_proof = base / (prefix+'_derivative_proof.json')
     materials=[]
     for name in cfg['protected_materials']:
         material=bpy.data.materials.get(name)
@@ -323,26 +352,57 @@ def cleanup_dependencies(config_path):
             {w.name:preview_identity(w) for w in bpy.data.worlds}!=protected_worlds):
         raise ValueError('Dependency cleanup changed protected appearance')
     if scene_identity(bpy.context)!=canonical:raise ValueError('Dependency cleanup changed undeclared scene state')
-    if sha(source)!=cfg['source_sha256'] or sha(config_path)!=config_sha or receipt.read_bytes()!=parent_receipt_bytes or proof_path.read_bytes()!=parent_proof_bytes:
-        raise ValueError('Dependency cleanup changed an original input')
-    saved=bpy.ops.wm.save_as_mainfile(filepath=str(target),relative_remap=False,check_existing=True)
-    if 'FINISHED' not in saved or not target.is_file() or scene_identity(bpy.context)!=canonical:
-        raise ValueError('Dependency cleanup save changed protected state')
-    parent_receipt.write_bytes(parent_receipt_bytes);parent_proof_path.write_bytes(parent_proof_bytes)
-    proof=copy.deepcopy(parent_proof)
-    proof.update(method='audited legacy TEX_IMAGE substitutions and unused image-datablock removal; accepted physical/preview/World and geometry unchanged; no recapture',
-        sourceSha256=sha(target),sceneIdentity=canonical)
-    proof['dependencyCleanup']=dict(version=1,sourceSha256=cfg['source_sha256'],sceneIdentityBefore=before,
-        canonicalSceneIdentityBefore=canonical,parentReceipt=parent_receipt.name,parentReceiptSha256=sha(parent_receipt),
-        parentProof=parent_proof_path.name,parentProofSha256=sha(parent_proof_path),
-        protectedMaterials=protected_materials,protectedWorlds=protected_worlds,imageRemaps=remaps,
-        nodeChanges=[dict(tree=tree_names[t.as_pointer()],node=n.name,source=s,target=r.name) for t,n,s,r in edits],
-        configSha256=config_sha)
-    record=copy.deepcopy(record)
-    record['source']['scene']=os.path.relpath(target,base).replace('\\','/')
-    record['source']['sceneSha256']=sha(target)
-    save_json(proof_path,proof);record['relocation']['proofSha256']=sha(proof_path);save_json(receipt,record)
-    validate_source(bpy.context,record,receipt_path=receipt)
+    def check_original_inputs():
+        if (sha(source) != cfg['source_sha256'] or sha(config_path) != config_sha
+                or receipt.read_bytes() != parent_receipt_bytes or proof_path.read_bytes() != parent_proof_bytes):
+            raise ValueError('Dependency cleanup changed an original input')
+
+    with ExitStack() as reservations, ExitStack() as rollback:
+        # Reserve the receipt and scene across concurrent cleanup invocations.
+        # Blender must still see a fresh .blend destination when it saves.
+        for path in (receipt, target):
+            lock = path.with_name(path.name+'.cleanup.lock')
+            try:
+                lock.touch(exist_ok=False)
+            except FileExistsError as error:
+                raise ValueError('Dependency cleanup output is reserved: '+str(path)) from error
+            reservations.callback(lock.unlink)
+
+        def write_new(path, data):
+            with path.open('xb') as stream:
+                rollback.callback(path.unlink, missing_ok=True)
+                stream.write(data)
+            return hashlib.sha256(data).hexdigest()
+
+        check_original_inputs()
+        if target.exists() or target.is_symlink():
+            raise ValueError('Dependency cleanup scene already exists: '+str(target))
+        rollback.callback(target.unlink, missing_ok=True)
+        saved=bpy.ops.wm.save_as_mainfile(filepath=str(target),relative_remap=False,check_existing=True)
+        if 'FINISHED' not in saved or not target.is_file() or scene_identity(bpy.context)!=canonical:
+            raise ValueError('Dependency cleanup save changed protected state')
+        target_sha = sha(target)
+        proof=copy.deepcopy(parent_proof)
+        proof.update(method='audited legacy TEX_IMAGE substitutions and unused image-datablock removal; accepted physical/preview/World and geometry unchanged; no recapture',
+            sourceSha256=target_sha,sceneIdentity=canonical)
+        proof['dependencyCleanup']=dict(version=1,sourceSha256=cfg['source_sha256'],sceneIdentityBefore=before,
+            canonicalSceneIdentityBefore=canonical,parentReceipt=parent_receipt.name,
+            parentReceiptSha256=write_new(parent_receipt, parent_receipt_bytes),
+            parentProof=parent_proof_path.name,parentProofSha256=write_new(parent_proof_path, parent_proof_bytes),
+            protectedMaterials=protected_materials,protectedWorlds=protected_worlds,imageRemaps=remaps,
+            nodeChanges=[dict(tree=tree_names[t.as_pointer()],node=n.name,source=s,target=r.name) for t,n,s,r in edits],
+            configSha256=config_sha)
+        record=copy.deepcopy(record)
+        record['source']['scene']=os.path.relpath(target,base).replace('\\','/')
+        record['source']['sceneSha256']=target_sha
+        record['relocation']['proof'] = derivative_proof.name
+        record['relocation']['proofSha256'] = write_new(derivative_proof, json.dumps(proof, indent=2).encode('utf8'))
+        candidate = receipt.with_name(receipt.name+'.cleanup.candidate')
+        write_new(candidate, json.dumps(record, indent=2).encode('utf8'))
+        validate_source(bpy.context,record,receipt_path=candidate)
+        check_original_inputs()
+        candidate.replace(receipt)
+        rollback.pop_all()
     print('DEPENDENCY_CLEANUP_READY '+str(target),flush=True)
 
 
