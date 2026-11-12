@@ -24,7 +24,7 @@ from babylon_js.materials.material import BJSMaterial
 from babylon_js.materials.nodes.abstract import REFRACTION_TEX
 
 assert Path(babylon_js.__file__).resolve().parent == args.addon_source.resolve()
-assert tuple(babylon_js.bl_info['version']) == (3, 3, 61)
+assert tuple(babylon_js.bl_info['version']) == (3, 3, 62)
 if args.require_registered:
     assert bpy.ops.export.bjs.get_rna_type().identifier
 logger = Logger(str(args.output / 'exporter.log'))

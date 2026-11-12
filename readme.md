@@ -1,6 +1,6 @@
 # Blender to Babylon.js exporter
 
-## Chargeuk fork: version 3.3.61
+## Chargeuk fork: version 3.3.62
 
 This fork maintains the Babylon.js Blender exporter and packages workflows for Blender 5.2. The add-on retains the scene and material exporter and adds optional texture delivery and environment-lighting tools.
 
@@ -10,6 +10,7 @@ Current fork features include:
 - Optional Basis skybox and Babylon ENV conversion for prepared panoramas.
 - Split direct/indirect lightmap preview and AO grading, physical colour adjustment, and AgX-compensated lightmap preparation.
 - Saved-scene environment helpers for preparation, baking and ownership checks, receiver response, camera capture (including uncapped native physical-diffuse references), spatial lighting, and simple or advanced environment-lighting volumes.
+- Schema 2 Advanced volume capture uses six native 64 × 64 perspective views with a 70° field of view, depth-based black fog, and temporary light and mesh-emission boosts. The same helper offers a standalone pilot at arbitrary probe positions.
 - Reusable Python workflow tools included in the installable add-on package, including offline paired Simple/Advanced RGBD volume delivery validation with a native OpenImageIO reader. The validator supports declared ETC1S or UASTC material profiles and checks Advanced source-ceiling proofs when supplied.
 - Principled BSDF non-default scalar IOR is serialized as PBR `subSurface.indexOfRefraction` without enabling refraction or translucency.
 - Native transport diagnostics preserve an unassigned optional AO image only when the saved appearance graph validates AO as disabled; required or active missing image bindings still fail.
@@ -30,7 +31,7 @@ Build the versioned Blender 5.2 add-on ZIP with:
 python tools/package_addon.py
 ```
 
-The script writes `dist/Blender2Babylon-3.3.61-blender52.zip`. In Blender, install that ZIP from Preferences > Add-ons > Install from Disk, then enable **Babylon.js**. After replacing an installed add-on, re-enable it or restart Blender before relying on the new code.
+The script writes `dist/Blender2Babylon-3.3.62-blender52.zip`. In Blender, install that ZIP from Preferences > Add-ons > Install from Disk, then enable **Babylon.js**. After replacing an installed add-on, re-enable it or restart Blender before relying on the new code.
 
 The optional room HDR-to-ENV converter needs Node.js 18+ and a compatible existing Chromium/Chrome browser. After installing or upgrading the add-on, run **Set up / repair ENV converter** in the add-on Preferences, or run the installed `workflow_tools/env_converter/setup.py` with external Python 3.8+. Setup installs the locked converter dependencies beside the selected converter and checks WebGL2; it does not download a browser unless explicitly allowed. The setup guide in the `blender-live-workflow` skill documents headless commands and overrides. Converter dependencies and local browser settings live beside the installed add-on and are excluded from the ZIP.
 

@@ -1,10 +1,12 @@
-"""Baked-appearance panorama probes; run only in disposable background Blender.
+"""Lighting-volume probes; run only in disposable background Blender.
 
 blender -b SOURCE.blend --python volume_capture.py -- --config RECIPE --phase trial
-Review trial panoramas/clearance before repeating with --phase capture.
-An explicit --skip-trial on capture records the user's waiver without a pilot.
+Review trial and clearance before repeating with --phase capture.
+Schema 2 also supports --phase pilot --output FRESH_DIR --pilot-position X Y Z.
 """
 import argparse
+from contextlib import ExitStack
+import hashlib
 import json
 import math
 import sys
@@ -74,11 +76,14 @@ def fill_grid(grid, positions, valid):
     return grid
 
 
-def write_advanced(grids, positions, valid, reference, bounds, output, provenance):
+def write_advanced(grids, positions, valid, reference, bounds, output, provenance, perspective=None):
     import numpy as np
     from common import sha, save_json
     from worker import write_exr
-    from babylon_js.environment_lighting_volume import resample_grid,pack_atlas,pack_advanced_atlas,DIMENSIONS,DIRECTION_ORDER,ADVANCED_LAYOUT,PANORAMA_CONVENTION
+    from babylon_js.environment_lighting_volume import (
+        resample_grid, pack_atlas, pack_advanced_atlas, DIMENSIONS, DIRECTION_ORDER, ADVANCED_LAYOUT,
+        PANORAMA_CONVENTION, ADVANCED_HEMISPHERE_NORMALIZATION, ADVANCED_PERSPECTIVE_NORMALIZATION,
+    )
     for grid in grids: fill_grid(grid,positions,valid)
     np.save(output/'advanced_coarse_rgba.npy',grids,allow_pickle=False)
     volumes=np.stack([resample_grid(grid) for grid in grids])
@@ -89,10 +94,18 @@ def write_advanced(grids, positions, valid, reference, bounds, output, provenanc
     contact=np.concatenate([np.concatenate(tiles[row:row+2],axis=1) for row in (0,2,4)],axis=0)
     preview(output/'advanced_slices.png',contact,2)
     for name,tile in zip(('px','nx','py','ny','pz','nz'),tiles):preview(output/('advanced_'+name+'_slices.png'),tile,4)
-    provenance=dict(provenance,panoramaConvention=PANORAMA_CONVENTION,cameraEulerBlender=[math.pi/2,0,0],
-        directionOrder=DIRECTION_ORDER,invalidProbeFill='same physical-distance nearest valid donor as Simple',
+    provenance=dict(provenance,directionOrder=DIRECTION_ORDER,invalidProbeFill='same physical-distance nearest valid donor as Simple',
         previewOrder='2 columns x 3 rows: +X,-X; +Y,-Y; +Z,-Z',
         rawStorage='[direction,z,y,x,rgba]; runtime Z bank=direction*32+z')
+    normalization = dict(referenceRgb=reference.tolist(), nearZeroGuard=1e-6)
+    if perspective is None:
+        normalization['method'] = ADVANCED_HEMISPHERE_NORMALIZATION
+        orientation = dict(panoramaConvention=PANORAMA_CONVENTION)
+        provenance.update(orientation, cameraEulerBlender=[math.pi/2,0,0])
+    else:
+        normalization['method'] = ADVANCED_PERSPECTIVE_NORMALIZATION
+        orientation = dict(referencePanoramaConvention=PANORAMA_CONVENTION, capture=perspective)
+        provenance.update(orientation, normalization=normalization)
     proof=output/'advanced_provenance.json';save_json(proof,provenance)
     statistics=[]
     for direction,volume in zip(DIRECTION_ORDER,volumes):
@@ -101,9 +114,9 @@ def write_advanced(grids, positions, valid, reference, bounds, output, provenanc
             rgbMax=rgb.max(axis=(0,1,2)).tolist(),rgbMean=rgb.mean(axis=(0,1,2)).tolist()))
     return dict(version=1,master=master.name,masterSha256=sha(master),bounds=bounds,dimensions=list(DIMENSIONS),
         directionOrder=list(DIRECTION_ORDER),atlasColumns=4,atlasRows=24,atlasLayout=ADVANCED_LAYOUT,flip_y=False,
-        panoramaConvention=PANORAMA_CONVENTION,provenance=proof.name,provenanceSha256=sha(proof),
-        normalization=dict(method='cosine-hemisphere-rgb-mean-over-env-reference',referenceRgb=reference.tolist(),nearZeroGuard=1e-6),
-        statistics=statistics,previews=dict(contactSheet='advanced_slices.png',display='Fixed Reinhard then sRGB; no local minmax'))
+        provenance=proof.name,provenanceSha256=sha(proof),normalization=normalization,
+        statistics=statistics,previews=dict(contactSheet='advanced_slices.png',display='Fixed Reinhard then sRGB; no local minmax'),
+        **orientation)
 
 
 def calibrate(output):
@@ -174,6 +187,8 @@ def derive(config_path, receipt_path, output, orientation_path):
     if [s.get('direction') for s in calibration.get('samples',[])]!=DIRECTION_ORDER or not all(s.get('passed') is True for s in calibration['samples']):
         raise ValueError('All six actual axis directions must pass calibration')
     config=json.loads(Path(config_path).read_text(encoding='utf-8-sig'))
+    if config.get('schema_version') != 1:
+        raise ValueError('derive reuses schema 1 panoramas; use schema 2 capture for native perspective probes')
     signature=json.loads((original/'capture_inputs.json').read_text())
     if signature['configSha256']!=sha(config_path) or signature['source']!=record['source']:
         raise ValueError('Accepted capture inputs/config changed')
@@ -261,24 +276,69 @@ def prepare_output(output, signature, phase, skip_trial=False):
     return trial
 
 
-def run(config_path, phase, skip_trial=False):
+def advanced_measurements(scene, layer, profile, options, snapshot, panorama, output, points, *, pilot=False, progress=False):
+    from advanced_probe_capture import measure_position, perspective_renderer
+    from common import sha, save_json
+    from probe_sources import prepared_sources
+    from babylon_js.environment_lighting_volume import DIRECTION_ORDER
+    checkpoint_dir = output/'advanced_probes'
+    checkpoint_dir.mkdir(exist_ok=True)
+    signature = sha(output/'capture_inputs.json')
+    measurements = []
+    checkpoints = []
+    with prepared_sources(scene, layer, snapshot, options) as diagnostics:
+        diagnostics_path = output/'advanced_sources.json'
+        if diagnostics_path.exists() and json.loads(diagnostics_path.read_text(encoding='utf8')) != diagnostics:
+            raise ValueError('Advanced source preparation differs from the original trial or capture')
+        save_json(diagnostics_path, diagnostics)
+        if 'lampResponseError' in diagnostics and not pilot:
+            raise ValueError(diagnostics['lampResponseError'] + ' See ' + str(diagnostics_path))
+        with perspective_renderer(scene, layer, profile, panorama, output) as (reference, render):
+            for count, (index, position) in enumerate(points, 1):
+                filename = ('%02d_%02d_%02d.json' % tuple(index)) if not pilot else ('%02d.json' % count)
+                path = checkpoint_dir/filename
+                ratio, record = measure_position(position, path, signature, reference, render)
+                measurements.append((index, ratio, record))
+                checkpoints.append(dict(index=index, position=record['position'],
+                    path=str(path.relative_to(output).as_posix()), sha256=sha(path)))
+                if progress and (count == 1 or count % 8 == 0 or count == len(points)):
+                    save_json(output/'progress.json', dict(stage='capturing-advanced', completed=count, total=len(points),
+                        directionOrder=DIRECTION_ORDER))
+                    print(f'VOLUME_ADVANCED_PROGRESS {count}/{len(points)}', flush=True)
+    evidence = dict(sourceDiagnostics=diagnostics_path.name, sourceDiagnosticsSha256=sha(diagnostics_path),
+                    checkpoints=checkpoints)
+    return reference, measurements, evidence, diagnostics
+
+
+def run(config_path, phase, skip_trial=False, *, pilot_output=None, pilot_positions=None):
+    with ExitStack() as resources:
+        return _run(config_path, phase, skip_trial, pilot_output, pilot_positions, resources)
+
+
+def _run(config_path, phase, skip_trial, pilot_output, pilot_positions, resources):
     import bpy
     import numpy as np
     from common import sha, save_json
     from worker import capture, write_exr
     from appearance import verify_combination, preview_identity
     from spatial_capture import set_exr_format, verify_gpu
+    from advanced_probe_capture import advanced_options, exclusive_capture, perspective_profile
+    from probe_sources import dependency_hashes, render_layer, source_snapshot
     from babylon_js import environment_controls
     from babylon_js.agx_lightmap import read_exr
-    from babylon_js.environment_lighting_volume import panorama_mean, relative_rgb, hemisphere_means, relative_hemispheres, resample_grid, pack_atlas, DIMENSIONS, LAYOUT
+    from babylon_js.environment_lighting_volume import (
+        panorama_mean, relative_rgb, hemisphere_means, relative_hemispheres, resample_grid, pack_atlas,
+        DIMENSIONS, LAYOUT, DIRECTION_ORDER, PANORAMA_CONVENTION, ADVANCED_PERSPECTIVE_NORMALIZATION,
+    )
     from ao import geometry_identity
     if not bpy.app.background: raise ValueError('Volume capture requires disposable background Blender')
     config_path = Path(config_path).resolve()
-    config = json.loads(config_path.read_text(encoding='utf-8-sig')); base = config_path.parent
-    if config.get('schema_version') != 1: raise ValueError('Expected volume capture schema_version 1')
-    include_advanced = config.get('include_advanced', True)
-    if type(include_advanced) is not bool:
-        raise ValueError('include_advanced must be a boolean')
+    config_bytes = config_path.read_bytes()
+    config = json.loads(config_bytes.decode('utf-8-sig')); base = config_path.parent
+    include_advanced, options = advanced_options(config)
+    pilot = phase == 'pilot'
+    if pilot and (options is None or pilot_output is None or not pilot_positions):
+        raise ValueError('Advanced pilot requires a schema 2 Advanced recipe, fresh output and probe positions')
     resolve = lambda key: (base / config[key]).resolve()
     source = resolve('source_scene'); scope = resolve('scope_recipe')
     if Path(bpy.data.filepath).resolve() != source or sha(source) != config['source_sha256']:
@@ -286,8 +346,11 @@ def run(config_path, phase, skip_trial=False):
     scene = bpy.context.scene
     if bpy.data.is_dirty or any(i.is_dirty for i in bpy.data.images):
         raise ValueError('Saved scene contains unsaved source/image changes')
-    recipe = json.loads(scope.read_text(encoding='utf-8-sig'))
+    scope_bytes = scope.read_bytes()
+    recipe = json.loads(scope_bytes.decode('utf-8-sig'))
     recipe['_root'] = str(scope.parent)
+    if options is not None and recipe.get('scene', scene.name) != scene.name:
+        raise ValueError('Open the configured saved capture scene before running Advanced')
     material = bpy.data.materials[scene.get('bjs_lighting_controls_material', '')]
     if material.name != recipe['preview_material']: raise ValueError('Scope preview material differs from saved controls')
     combined = resolve('combined'); provenance = resolve('combined_provenance')
@@ -307,17 +370,52 @@ def run(config_path, phase, skip_trial=False):
     if not math.isfinite(minimum) or minimum <= 0: raise ValueError('Positive probe clearance required')
     reference_pixels = read_exr(reference)
     reference_rgb = panorama_mean(reference_pixels)
-    reference_hemispheres = hemisphere_means(reference_pixels) if include_advanced else None
+    reference_hemispheres = hemisphere_means(reference_pixels) if include_advanced and options is None else None
     relative_rgb(np.ones((2,4,3), np.float32), reference_rgb)
     world = environment_controls.settings(environment_controls.find_controls(scene.world))
     identity = geometry_identity(recipe)
-    inputs = dict(scene=str(source), sceneSha256=sha(source), scopeRecipe=str(scope), scopeRecipeSha256=sha(scope),
+    inputs = dict(scene=str(source), sceneSha256=config['source_sha256'], scopeRecipe=str(scope),
+        scopeRecipeSha256=hashlib.sha256(scope_bytes).hexdigest(),
         combined=str(combined), combinedSha256=sha(combined), combinedProvenance=str(provenance), combinedProvenanceSha256=sha(provenance),
         reference=str(reference), referenceSha256=sha(reference), previewSha256=preview_identity(material),
         geometrySha256=identity['geometry_sha256'], worldControls=world, worldImageSha256=sha(world['image']))
     output = resolve('output_dir')
-    signature = dict(configSha256=sha(config_path), source=inputs)
-    trial = prepare_output(output, signature, phase, skip_trial)
+    signature = dict(configSha256=hashlib.sha256(config_bytes).hexdigest(), source=inputs)
+    profile = snapshot = layer = None
+    if options is not None:
+        layer = render_layer(scene, bpy.context.view_layer)
+        profile = perspective_profile(scene, layer, options)
+        snapshot = source_snapshot(scene, layer, recipe, options['material_roles'])
+        signature.update(advanced=profile, blenderBuild=bpy.app.build_hash.decode('ascii'),
+                         externalDependencies=dependency_hashes(scene, snapshot))
+    if pilot:
+        positions = np.asarray(pilot_positions, dtype=float)
+        if positions.ndim != 2 or positions.shape[1] != 3 or not np.isfinite(positions).all():
+            raise ValueError('Pilot positions must be finite Babylon environment-local XYZ')
+        fresh = Path(pilot_output).resolve()
+        if fresh == output or fresh.is_relative_to(output):
+            raise ValueError('Choose a pilot output outside the production volume output')
+        output = fresh
+        output.mkdir(parents=True, exist_ok=False)
+        signature['pilotPositions'] = positions.tolist()
+        save_json(output/'capture_inputs.json', signature)
+        trial = None
+    else:
+        trial = prepare_output(output, signature, phase, skip_trial)
+    if profile is not None:
+        resources.enter_context(exclusive_capture(output))
+        if (output/'volume_receipt.json').exists():
+            raise ValueError('Preserve completed volume; choose a new output')
+        if trial is not None and not skip_trial:
+            passed_advanced = trial.get('advanced', {})
+            if trial.get('source') != inputs or passed_advanced.get('capture') != profile:
+                raise ValueError('Advanced trial capture/source profile differs')
+            trial_files = passed_advanced.get('checkpoints', []) + [
+                dict(path='advanced_sources.json', sha256=passed_advanced.get('sourceDiagnosticsSha256'))]
+            for row in trial_files:
+                path = (output/row['path']).resolve()
+                if not path.is_relative_to(output) or sha(path) != row['sha256']:
+                    raise ValueError('Advanced trial checkpoint or source diagnostics changed: ' + str(path))
     masters = output/'masters'; masters.mkdir(exist_ok=True)
     import shutil
     for original, filename in ((combined, 'combined.exr'), (provenance, 'combined.provenance.json')):
@@ -333,12 +431,41 @@ def run(config_path, phase, skip_trial=False):
     recipe['capture'] = dict(mode='baked', world_output='Lighting', position=[0,0,0], size=size, samples=samples)
     set_exr_format(scene)
     capture(recipe, output, output, prepare_only=True)
-    devices = verify_gpu(scene, spec)
+    if options is not None and recipe['device'] == 'CPU':
+        if scene.cycles.device != 'CPU':
+            raise ValueError('Advanced CPU capture device was not selected')
+        devices = [dict(name='CPU', type='CPU')]
+    else:
+        devices = verify_gpu(scene, spec)
     tree = capture_geometry(scene)
     # worker.capture has now prepared accepted colour x adjusted-lighting EMIT,
     # no analytic lights/reflective glass/helpers, and managed World Lighting.
     if any(o.type == 'LIGHT' and not o.hide_render for o in scene.objects):
         raise ValueError('Analytic light unexpectedly visible in baked capture')
+    def verify_inputs():
+        if sha(config_path) != signature['configSha256']:
+            raise ValueError('Volume recipe changed during capture')
+        for key in ('scene','scopeRecipe','combined','combinedProvenance','reference'):
+            if sha(inputs[key]) != inputs[key+'Sha256']:
+                raise ValueError('Input changed during capture: ' + key)
+        if profile is not None and (sha(world['image']) != inputs['worldImageSha256'] or
+                                    dependency_hashes(scene, snapshot) != signature['externalDependencies']):
+            raise ValueError('Advanced external render dependencies changed during capture')
+
+    if pilot:
+        points = list(enumerate(positions.tolist()))
+        reference_rgb, measured, proof, diagnostics = advanced_measurements(
+            scene, layer, profile, options, snapshot, reference_pixels, output, points, pilot=True)
+        records = [dict(record, index=index, clearance=clearance(tree, record['position'], minimum))
+                   for index, _, record in measured]
+        verify_inputs()
+        save_json(output/'advanced_pilot.json', dict(status='complete', source=inputs, capture=profile,
+            enabledDevices=devices, directionOrder=DIRECTION_ORDER, referencePanoramaConvention=PANORAMA_CONVENTION,
+            normalization=dict(method=ADVANCED_PERSPECTIVE_NORMALIZATION, referenceRgb=reference_rgb.tolist(),
+                               nearZeroGuard=1e-6),
+            probes=records, sourceDiagnostics=diagnostics, evidence=proof))
+        print('VOLUME_ADVANCED_PILOT_READY '+str(output/'advanced_pilot.json'),flush=True)
+        return
     nx, ny, nz = dims
     positions = np.empty((nz,ny,nx,3), np.float64)
     checks = []; valid = np.zeros((nz,ny,nx), dtype=bool)
@@ -379,9 +506,17 @@ def run(config_path, phase, skip_trial=False):
             _,pixels,result=render(position,output/('trial_%02d'%index))
             preview(output/('trial_%02d_panorama.png'%index),pixels, max(1,512//size))
             records.append(dict(**result,index=voxel,directory='trial_%02d'%index,clearance=check))
-        save_json(output/'trial.json',dict(status='passed',source=inputs,referenceRgb=reference_rgb.tolist(),
+        result = dict(status='passed',source=inputs,referenceRgb=reference_rgb.tolist(),
             probes=records,validCoarseProbes=int(valid.sum()),enabledDevices=devices,
-            display='Fixed Reinhard then sRGB; display previews are not linear lighting maps'))
+            display='Fixed Reinhard then sRGB; display previews are not linear lighting maps')
+        if profile is not None:
+            points = [(item['index'], item['position']) for item in records]
+            ref, measured, proof, _ = advanced_measurements(
+                scene, layer, profile, options, snapshot, reference_pixels, output, points)
+            result['advanced'] = dict(capture=profile, directionOrder=DIRECTION_ORDER,
+                referenceRgb=ref.tolist(), probes=[dict(row, index=index) for index, _, row in measured], **proof)
+            verify_inputs()
+        save_json(output/'trial.json',result)
         print('VOLUME_TRIAL_READY '+str(output/'trial.json'),flush=True)
         return
     grid=np.ones((nz,ny,nx,4),np.float32); grid[...,:3]=np.nan
@@ -396,7 +531,7 @@ def run(config_path, phase, skip_trial=False):
         directory=pilot.get((x,y,z),probes/('%02d_%02d_%02d'%(x,y,z)))
         ratio,pixels,result=render(positions[z,y,x],directory)
         grid[z,y,x,:3]=ratio
-        if include_advanced:
+        if include_advanced and options is None:
             advanced_grid[:,z,y,x,:3]=relative_hemispheres(pixels,reference_hemispheres)
         checkpoints.append(dict(directory=str(directory.relative_to(output)),probeSha256=sha(directory/'probe.json'),panoramaSha256=result['panoramaSha256']))
         completed+=1
@@ -412,6 +547,12 @@ def run(config_path, phase, skip_trial=False):
             preview(output/'coarse_progress.png',sheet,max(1,128//nz))
             save_json(output/'progress.json',dict(completed=completed,total=total,stage='capturing',
                 preview='coarse_progress.png',unmeasured='magenta',sliceOrder='Y left-to-right; X right; Z down'))
+    if profile is not None:
+        points = [([x, y, z], positions[z, y, x]) for z, y, x in np.ndindex(valid.shape) if valid[z, y, x]]
+        advanced_reference, measured, proof, _ = advanced_measurements(
+            scene, layer, profile, options, snapshot, reference_pixels, output, points, progress=True)
+        for (x, y, z), ratio, _ in measured:
+            advanced_grid[:, z, y, x, :3] = ratio
     fill_grid(grid,positions,valid)
     np.save(output/'coarse_valid_mask.npy',valid,allow_pickle=False)
     np.save(output/'coarse_volume.npy',grid,allow_pickle=False)
@@ -434,14 +575,17 @@ def run(config_path, phase, skip_trial=False):
         previews=dict(slices='volume_slices.png',panorama='capture_00_panorama.png' if skip_trial else 'trial_00_panorama.png',display='Fixed Reinhard then sRGB; neutral ratio 1 maps to approximately 0.735 sRGB; no local minmax'))
     if skip_trial:
         record['capture']['trial'] = dict(status='skipped', explicitUserOverride=True, reason=trial['reason'], receipt='trial.json', receiptSha256=sha(output/'trial.json'))
-    # Keep the untouched Simple receipt usable by derive(); default capture still
-    # writes both products from these same panoramas without extra renders.
-    if include_advanced:
+    # Schema 1 keeps the panorama-based pair. Schema 2 shares the Simple grid
+    # and atlas pipeline while measuring Advanced from its own perspective views.
+    if profile is not None:
+        record['advanced'] = write_advanced(advanced_grid,positions,valid,advanced_reference,bounds,output,
+            dict(source=inputs, acceptedCaptureInputsSha256=sha(output/'capture_inputs.json'),
+                validMaskSha256=sha(output/'coarse_valid_mask.npy'), enabledDevices=devices, **proof), profile)
+    elif include_advanced:
         record['advanced']=write_advanced(advanced_grid,positions,valid,reference_hemispheres,bounds,output,
             dict(method='same captured panoramas as Simple; no additional probe renders',source=inputs,
                 acceptedCaptureInputsSha256=sha(output/'capture_inputs.json'),validMaskSha256=sha(output/'coarse_valid_mask.npy'),checkpoints=checkpoints))
-    for key in ('scene','scopeRecipe','combined','combinedProvenance','reference'):
-        if sha(inputs[key])!=inputs[key+'Sha256']: raise ValueError('Input changed during capture: '+key)
+    verify_inputs()
     save_json(output/'volume_receipt.json',record)
     save_json(output/'progress.json',dict(completed=total,total=total,stage='complete',preview='volume_slices.png',statistics=stats))
     print('VOLUME_CAPTURE_READY '+str(output/'volume_receipt.json'),flush=True)
@@ -450,13 +594,16 @@ def run(config_path, phase, skip_trial=False):
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--config',type=Path)
-    parser.add_argument('--phase',choices=('trial','capture','calibrate','derive','relocate','cleanup-dependencies'),required=True)
+    parser.add_argument('--phase',choices=('trial','capture','pilot','calibrate','derive','relocate','cleanup-dependencies'),required=True)
     parser.add_argument('--receipt',type=Path)
     parser.add_argument('--output',type=Path)
     parser.add_argument('--orientation',type=Path)
+    parser.add_argument('--pilot-position', nargs=3, action='append', type=float, metavar=('X','Y','Z'),
+                        help='Advanced pilot point in Babylon environment-local scene units; repeat for more points')
     parser.add_argument('--skip-trial',action='store_true',help='Explicit user override: capture the full grid without a trial; all source/clearance checks remain enabled')
     args=parser.parse_args(sys.argv[sys.argv.index('--')+1:])
     if args.skip_trial and args.phase != 'capture':parser.error('--skip-trial requires --phase capture')
+    if args.pilot_position and args.phase != 'pilot':parser.error('--pilot-position requires --phase pilot')
     if args.phase=='cleanup-dependencies':
         if not args.config:parser.error('cleanup-dependencies requires --config')
         from volume_relocation import cleanup_dependencies
@@ -471,6 +618,10 @@ if __name__=='__main__':
     elif args.phase=='derive':
         if not all((args.config,args.receipt,args.output,args.orientation)):parser.error('derive requires --config, --receipt, --output and --orientation')
         derive(args.config,args.receipt,args.output,args.orientation)
+    elif args.phase=='pilot':
+        if not all((args.config,args.output,args.pilot_position)):
+            parser.error('pilot requires --config, --output and at least one --pilot-position X Y Z')
+        run(args.config, args.phase, pilot_output=args.output, pilot_positions=args.pilot_position)
     else:
         if not args.config:parser.error('trial/capture requires --config')
         run(args.config,args.phase,args.skip_trial)

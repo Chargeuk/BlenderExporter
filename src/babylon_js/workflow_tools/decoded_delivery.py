@@ -824,11 +824,12 @@ def validate_volumes(recipe_path,output,ktx):
         raise ValueError('Capture signature/config/source association differs')
     advanced=receipt['advanced'];provenance_path=remember(paths['receipt'].parent/advanced['provenance'],advanced['provenanceSha256'])
     provenance=bound_json(provenance_path,inputs)
-    if (provenance.get('source')!=historical_source or provenance.get('acceptedCaptureInputsSha256')!=sha(paths['capture_inputs'])
-            or provenance.get('directionOrder')!=volume.DIRECTION_ORDER
-            or provenance.get('panoramaConvention')!=volume.PANORAMA_CONVENTION
-            or provenance.get('cameraEulerBlender')!=[math.pi/2,0,0]):
-        raise ValueError('Advanced capture provenance source/bank/orientation differs')
+    volume.validate_advanced_provenance(advanced, provenance, historical_source)
+    if provenance.get('acceptedCaptureInputsSha256')!=sha(paths['capture_inputs']):
+        raise ValueError('Advanced capture provenance input signature differs')
+    if advanced['normalization']['method']==volume.ADVANCED_PERSPECTIVE_NORMALIZATION:
+        if signature.get('advanced')!=advanced['capture']:
+            raise ValueError('Advanced perspective capture profile differs from its bound inputs')
     if 'calibration' in provenance or 'calibrationSha256' in provenance:
         filename=provenance.get('calibration','')
         if not filename or Path(filename).name!=filename:raise ValueError('Native orientation calibration must be beside provenance')

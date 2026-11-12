@@ -10,6 +10,11 @@ ADVANCED_FILENAME = 'environment_lighting_volume_advanced_rgbd.ktx2'
 ADVANCED_LAYOUT = 'ambient-cube-6-y-slices-row-major-xz'
 DIRECTION_ORDER = ['+X', '-X', '+Y', '-Y', '+Z', '-Z']
 PANORAMA_CONVENTION = 'equirectangular-center-babylon-positive-z-right-positive-x-up-positive-y-v1'
+ADVANCED_HEMISPHERE_NORMALIZATION = 'cosine-hemisphere-rgb-mean-over-env-reference'
+ADVANCED_PERSPECTIVE_NORMALIZATION = 'fogged-rectilinear-rgb-mean-over-matched-env-reference'
+ADVANCED_PERSPECTIVE_METHOD = 'six-native-perspective-views-v1'
+ADVANCED_PERSPECTIVE_SIZE = 64
+ADVANCED_PERSPECTIVE_FOV = 70
 
 
 def saved_options(world):
@@ -184,14 +189,35 @@ def validate_advanced(advanced, simple):
         raise ValueError('Advanced volume bounds/dimensions must match Simple')
     if advanced.get('directionOrder') != DIRECTION_ORDER or advanced.get('atlasColumns') != 4 or advanced.get('atlasRows') != 24 or advanced.get('atlasLayout') != ADVANCED_LAYOUT:
         raise ValueError('Unsupported Advanced volume direction/atlas layout')
-    if advanced.get('flip_y') is not False or advanced.get('panoramaConvention') != PANORAMA_CONVENTION:
-        raise ValueError('Advanced volume panorama/atlas orientation is unverified')
+    if advanced.get('flip_y') is not False:
+        raise ValueError('Advanced volume atlas orientation is unverified')
     norm = advanced.get('normalization', {})
-    if norm.get('method') != 'cosine-hemisphere-rgb-mean-over-env-reference' or len(norm.get('referenceRgb', [])) != 6:
-        raise ValueError('Advanced volume requires six ENV hemisphere RGB references')
+    method = norm.get('method')
+    if method == ADVANCED_HEMISPHERE_NORMALIZATION:
+        if advanced.get('panoramaConvention') != PANORAMA_CONVENTION:
+            raise ValueError('Advanced volume panorama/atlas orientation is unverified')
+    elif method == ADVANCED_PERSPECTIVE_NORMALIZATION:
+        profile = advanced.get('capture', {})
+        if (advanced.get('referencePanoramaConvention') != PANORAMA_CONVENTION or
+                profile.get('method') != ADVANCED_PERSPECTIVE_METHOD or
+                profile.get('resolution') != [ADVANCED_PERSPECTIVE_SIZE] * 2 or
+                profile.get('fovDegrees') != [ADVANCED_PERSPECTIVE_FOV] * 2 or
+                profile.get('depth') != 'cycles-axial-z-times-pixel-centre-ray-length' or
+                not isinstance(profile.get('viewLayer'), str) or not profile['viewLayer'] or
+                type(profile.get('samples')) is not int or not 1 <= profile['samples'] <= 64 or
+                norm.get('nearZeroGuard') != 1e-6):
+            raise ValueError('Advanced volume perspective capture profile is invalid')
+        finite(profile.get('blackFogPerMetre'), 'Advanced black fog per metre', 0)
+        for key in ('sourceMultiplier', 'metresPerBlenderUnit'):
+            if finite(profile.get(key), 'Advanced ' + key, 0) == 0:
+                raise ValueError('Advanced ' + key + ' must be positive')
+    else:
+        raise ValueError('Unsupported Advanced volume normalization')
+    if len(norm.get('referenceRgb', [])) != 6:
+        raise ValueError('Advanced volume requires six matching ENV RGB references')
     for rgb in norm['referenceRgb']:
-        if len(rgb) != 3: raise ValueError('Expected RGB hemisphere reference')
-        for value in rgb: finite(value, 'hemisphere RGB', 1e-6)
+        if len(rgb) != 3: raise ValueError('Expected directional RGB reference')
+        for value in rgb: finite(value, 'directional reference RGB', 1e-6)
     for key in ('masterSha256', 'provenanceSha256'):
         digest = advanced.get(key, '')
         if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
@@ -201,6 +227,21 @@ def validate_advanced(advanced, simple):
         if not filename or Path(filename).name != filename:
             raise ValueError('Advanced volume files must be beside the receipt')
     return advanced
+
+
+def validate_advanced_provenance(advanced, provenance, source):
+    """Both formats bind the six banks to their real camera/reference method."""
+    if (not isinstance(provenance, dict) or provenance.get('source') != source or
+            provenance.get('directionOrder') != DIRECTION_ORDER):
+        raise ValueError('Advanced capture provenance source/bank/orientation differs')
+    if advanced['normalization']['method'] == ADVANCED_PERSPECTIVE_NORMALIZATION:
+        if (provenance.get('capture') != advanced['capture'] or
+                provenance.get('normalization') != advanced['normalization'] or
+                provenance.get('referencePanoramaConvention') != PANORAMA_CONVENTION):
+            raise ValueError('Advanced perspective capture provenance differs')
+    elif (provenance.get('panoramaConvention') != PANORAMA_CONVENTION or
+          provenance.get('cameraEulerBlender') != [math.pi/2, 0, 0]):
+        raise ValueError('Advanced capture provenance source/bank/orientation differs')
 
 
 def advanced_payload(record, texture_sha256, min_divisor):
@@ -373,16 +414,22 @@ def export_volume(context, model, work, package, options, ktx, threads=8, enviro
     if alpha_policy is not None and 'advanced' not in record:
         raise ValueError('Advanced alpha policy requires an Advanced receipt')
     validate_source(context, record, environment_options, receipt)
+    if 'advanced' in record:
+        advanced = record['advanced']
+        provenance = receipt.parent / advanced['provenance']
+        if not provenance.is_file() or core.sha(provenance) != advanced['provenanceSha256']:
+            raise ValueError('Advanced capture provenance changed')
+        if advanced['normalization']['method'] == ADVANCED_PERSPECTIVE_NORMALIZATION:
+            historical = record
+            if 'relocation' in record:
+                historical = core.read_json(receipt.parent / record['relocation']['originalReceipt'])
+            validate_advanced_provenance(advanced, core.read_json(provenance), historical['source'])
     source = Path(bpy.path.abspath(options['image'])).resolve() if options.get('image') else (receipt.parent / record['master']).resolve()
     simple_kwargs = {'divisor_mode': simple_mode} if simple_mode != 'per-pixel' else {}
     report = _export_texture(source, record['masterSha256'], FILENAME, [128,128], work, package, ktx, threads, **simple_kwargs)
     report['receipt'] = str(receipt)
     descriptor = payload(record, report['textureSha256'], report['metrics']['alpha_min']/255, options.get('strength',1))
     if 'advanced' in record:
-        advanced = record['advanced']
-        provenance = receipt.parent / advanced['provenance']
-        if not provenance.is_file() or core.sha(provenance) != advanced['provenanceSha256']:
-            raise ValueError('Advanced panorama provenance changed')
         # Prepared D stays original even when optional endpoint capping makes
         # raw decoded alpha smaller: nativeRGBA8 decoding applies minDivisor D.
         advanced_kwargs = {'advanced_alpha_policy': alpha_policy} if alpha_policy else {}

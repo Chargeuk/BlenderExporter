@@ -1,5 +1,11 @@
 # Blender2Babylon add-on changelog
 
+## Blender exporter 3.3.62 (12 November 2026)
+
+- Adds native six-direction perspective baking and arbitrary-position pilots for schema 2 Advanced lighting volumes.
+- Matches fogged linear RGB against unfogged rectilinear samples from the saved ENV reference. Advanced temporarily boosts eligible render-visible lamps and authored mesh emission, records source decisions, and restores the capture settings.
+- Binds Advanced checkpoints to the capture inputs and supports both perspective and historical panorama-based Advanced receipts in export and offline validation.
+
 ## Blender exporter 3.3.61 (10 November 2026)
 
 - Combines the guarded decoded-delivery checks from 3.3.59 with the portable volume cleanup and lineage checks from 3.3.60.

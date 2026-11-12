@@ -43,6 +43,8 @@ REQUIRED_TOOLS = (
     'environment_tools/volume_assembly.py',
     'workflow_tools/volume_audit.py',
     'environment_tools/volume_capture.py',
+    'environment_tools/advanced_probe_capture.py',
+    'environment_tools/probe_sources.py',
     'environment_tools/volume_relocation.py',
     'environment_lighting_volume.py',
     'uastc_alpha.py',
